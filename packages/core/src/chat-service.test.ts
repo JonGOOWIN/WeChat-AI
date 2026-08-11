@@ -395,6 +395,53 @@ describe("ChatService adaptive reply finalization seam", () => {
       ["一", "二", "三", "四"],
     );
   });
+
+  it("keeps valid primary JSON parts when the reply filter fails", async () => {
+    const failingFilter = {
+      async chat() {
+        throw new Error("filter unavailable");
+      },
+      async chatWithUsage() {
+        throw new Error("filter unavailable");
+      },
+    } as unknown as LlmClient;
+    const chat = new ChatService({} as never, failingFilter, {
+      replyFilterEnabled: true,
+    });
+    const result = await chat.finalizeReplyParts(
+      params('{"messages":["第一条","第二条"]}'),
+    );
+    assert.deepEqual(
+      result.parts.map((part) => (part.kind === "text" ? part.text : part.slug)),
+      ["第一条", "第二条"],
+    );
+  });
+
+  it("drops an unknown sticker-only filter envelope without raw JSON fallback", async () => {
+    const unknownStickerFilter = {
+      async chat() {
+        return '{"messages":[{"type":"sticker","slug":"ghost"}]}';
+      },
+      async chatWithUsage() {
+        return {
+          text: '{"messages":[{"type":"sticker","slug":"ghost"}]}',
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          model: "fake",
+        };
+      },
+    } as unknown as LlmClient;
+    const chat = new ChatService({} as never, unknownStickerFilter, {
+      replyFilterEnabled: true,
+    });
+    const result = await chat.finalizeReplyParts(
+      params('{"messages":["primary reply"]}'),
+    );
+    assert.deepEqual(result.parts, []);
+    assert.equal(result.displayText, "");
+    assert.equal(JSON.stringify(result).includes("ghost"), false);
+  });
 });
 
 describe("ChatService adaptive reply public seam", () => {
@@ -495,6 +542,136 @@ describe("ChatService adaptive reply public seam", () => {
       fiveHistory.filter((message) => message.role === "assistant").length,
       1,
     );
+    await db.close();
+  });
+
+  it("preserves valid primary fallback and never stores unknown sticker JSON", async (t) => {
+    let db;
+    try {
+      db = openDatabase(redisUrl);
+      await Promise.race([
+        db.ping(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), 2500),
+        ),
+      ]);
+    } catch {
+      try {
+        await db?.close();
+      } catch {
+        /* ignore */
+      }
+      t.skip("Redis not available");
+      return;
+    }
+
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = `bot_adaptive_filter_${Date.now()}`;
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "test",
+      botToken: "test-token",
+    });
+    const fallbackPeer = `fallback_${Date.now()}@im.wechat`;
+    const stickerPeer = `sticker_${Date.now()}@im.wechat`;
+    for (const peerId of [fallbackPeer, stickerPeer]) {
+      await approvePeer(db, botId, peerId);
+      await setAssignment(db, botId, peerId, persona.id);
+    }
+
+    let call = 0;
+    const scripted = {
+      async chat() {
+        throw new Error("unexpected chat call");
+      },
+      async chatWithUsage() {
+        call++;
+        if (call === 1) {
+          return {
+            text: '{"messages":["第一条","第二条"]}',
+            promptTokens: 1,
+            completionTokens: 1,
+            totalTokens: 2,
+            model: "fake",
+          };
+        }
+        if (call === 2) throw new Error("filter unavailable");
+        if (call === 3) {
+          return {
+            text: '{"messages":["primary reply"]}',
+            promptTokens: 1,
+            completionTokens: 1,
+            totalTokens: 2,
+            model: "fake",
+          };
+        }
+        return {
+          text: '{"messages":[{"type":"sticker","slug":"ghost"}]}',
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          model: "fake",
+        };
+      },
+    } as unknown as LlmClient;
+    const chat = new ChatService(db, scripted, {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      replyFilterEnabled: true,
+      stickersEnabled: false,
+    });
+    const plan = {
+      decision: "reply" as const,
+      targetPartCount: 2 as const,
+      coveredItemIds: ["m1"],
+      reason: "reply-obligation" as const,
+      skipBiasPercent: 10,
+      items: [
+        {
+          id: "m1",
+          kind: "new-question-or-request" as const,
+          replyObligation: true,
+        },
+      ],
+    };
+    const request = (peerId: string) => ({
+      botAccountId: botId,
+      peerId,
+      text: "请回答？",
+      contextToken: `token-${peerId}`,
+      batchItems: [{ id: "m1", text: "请回答？", attachments: [] }],
+      replyPlan: plan,
+    });
+
+    const fallbackResult = await chat.handleInbound(request(fallbackPeer));
+    const stickerResult = await chat.handleInbound(request(stickerPeer));
+    assert.equal(fallbackResult.kind, "reply");
+    assert.deepEqual(
+      fallbackResult.parts?.map((part) =>
+        part.kind === "text" ? part.text : part.slug,
+      ),
+      ["第一条", "第二条"],
+    );
+    assert.equal(stickerResult.kind, "skip");
+
+    const fallbackHistory = await listRecentMessages(
+      db,
+      botId,
+      fallbackPeer,
+      20,
+    );
+    assert.equal(
+      fallbackHistory.filter((message) => message.role === "assistant").length,
+      1,
+    );
+    const stickerHistory = await listRecentMessages(db, botId, stickerPeer, 20);
+    assert.equal(
+      stickerHistory.filter((message) => message.role === "assistant").length,
+      0,
+    );
+    assert.equal(JSON.stringify(stickerHistory).includes("ghost"), false);
     await db.close();
   });
 });

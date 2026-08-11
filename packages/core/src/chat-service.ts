@@ -420,14 +420,6 @@ export class ChatService {
           botName: params.botName ?? undefined,
         });
       }
-      if (params.adaptive && filtered.usedFallback) {
-        return {
-          parts: [],
-          bubbles: [],
-          displayText: "",
-          bubblesFromJson: false,
-        };
-      }
       if (
         params.adaptive &&
         filtered.parts.length === 1 &&

@@ -122,3 +122,42 @@ describe("shipped defaults: other optional features stay off", () => {
     assert.equal(bare().allowUnapproved, false);
   });
 });
+
+describe("shipped defaults: adaptive reply batching follows RULE-001", () => {
+  it("uses the confirmed timing and calibration defaults", () => {
+    const cfg = bare();
+    assert.equal(cfg.replyBatchSilenceMs, 10_000);
+    assert.equal(cfg.replyBatchMaxWaitMs, 20_000);
+    assert.equal(cfg.replySkipBiasPercent, 10);
+    assert.deepEqual(
+      [
+        cfg.replyCountWeight1,
+        cfg.replyCountWeight2,
+        cfg.replyCountWeight3,
+        cfg.replyCountWeight4,
+      ],
+      [50, 30, 15, 5],
+    );
+  });
+
+  it("accepts environment overrides without coupling the four weights", () => {
+    const cfg = loadConfig({
+      REPLY_BATCH_SILENCE_MS: "2500",
+      REPLY_BATCH_MAX_WAIT_MS: "8000",
+      REPLY_SKIP_BIAS_PERCENT: "25",
+      REPLY_COUNT_WEIGHTS: "5,15,30,50",
+    } as NodeJS.ProcessEnv);
+    assert.equal(cfg.replyBatchSilenceMs, 2_500);
+    assert.equal(cfg.replyBatchMaxWaitMs, 8_000);
+    assert.equal(cfg.replySkipBiasPercent, 25);
+    assert.deepEqual(
+      [
+        cfg.replyCountWeight1,
+        cfg.replyCountWeight2,
+        cfg.replyCountWeight3,
+        cfg.replyCountWeight4,
+      ],
+      [5, 15, 30, 50],
+    );
+  });
+});

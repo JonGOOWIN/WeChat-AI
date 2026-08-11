@@ -67,6 +67,11 @@ wa:settings:runtime（Redis JSON）  ←  管理面板写入
 
 几个需要特殊处理、否则会静默失效的地方：
 
+- 连续普通 AI 对话按 Bot + 联系人分别聚合。`replyBatchSilenceMs`（默认 10 秒）和
+  `replyBatchMaxWaitMs`（默认 20 秒）会重装所有尚未关闭批次的 timer；
+  `replySkipBiasPercent` 与 `replyCountWeight1..4` 会在下一次批次规划时读取。
+  跳过比例只是长期校准目标：只有整批没有回复义务才可跳过，直接问题、请求、决策和
+  重要情绪不会因为调高比例而被丢弃。P2P、广播和主动联系不走该批次路径。
 - `ChatService.webSearch` 原本在构造函数里判断一次，`WEB_SEARCH_ENABLED=false` 启动就永远
   是 `null`。现在按 tools 配置的指纹惰性重建。
 - `BotWorkerManager` 的 10 个 `readonly` 标量改成可写，且 setter 里复刻了构造函数的

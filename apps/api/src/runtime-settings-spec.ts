@@ -25,6 +25,13 @@ export type RuntimeSettingKey =
   | "replyDelayFirstMinMs"
   | "replyDelayFirstMaxMs"
   | "replyDelayThinkExtraMs"
+  | "replyBatchSilenceMs"
+  | "replyBatchMaxWaitMs"
+  | "replySkipBiasPercent"
+  | "replyCountWeight1"
+  | "replyCountWeight2"
+  | "replyCountWeight3"
+  | "replyCountWeight4"
   | "allowUnapproved"
   | "peerRatePerMinute"
   // memory
@@ -255,6 +262,46 @@ export const SETTING_SPECS: SettingSpec[] = [
     min: 2,
     max: 100,
   },
+  {
+    key: "replyBatchSilenceMs",
+    env: "REPLY_BATCH_SILENCE_MS",
+    group: "chat",
+    label: "连续消息静默窗口(ms)",
+    type: "int",
+    min: 100,
+    max: 120000,
+  },
+  {
+    key: "replyBatchMaxWaitMs",
+    env: "REPLY_BATCH_MAX_WAIT_MS",
+    group: "chat",
+    label: "连续消息最长等待(ms)",
+    type: "int",
+    min: 100,
+    max: 120000,
+  },
+  {
+    key: "replySkipBiasPercent",
+    env: "REPLY_SKIP_BIAS_PERCENT",
+    group: "chat",
+    label: "无回复义务批次跳过校准(%)",
+    type: "float",
+    min: 0,
+    max: 100,
+    hint: "只用于长期校准；直接问题、请求、决策和重要情绪不会按概率丢弃",
+  },
+  ...([1, 2, 3, 4] as const).map(
+    (count): SettingSpec => ({
+      key: `replyCountWeight${count}` as RuntimeSettingKey,
+      env: `REPLY_COUNT_WEIGHT_${count}`,
+      group: "chat",
+      label: `${count} 条回复权重`,
+      type: "float",
+      min: 0,
+      max: 10000,
+      hint: "相对权重；语境优先，不会为凑条数机械拆句",
+    }),
+  ),
   {
     key: "replyDelayMsPerChar",
     env: "REPLY_DELAY_MS_PER_CHAR",

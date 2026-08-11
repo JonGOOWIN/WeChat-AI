@@ -239,6 +239,15 @@ async function main(): Promise<void> {
     replyConcurrency: cfg.replyConcurrency,
     inboxMaxLen: cfg.inboxMaxLen,
     splitReply: cfg.splitReply,
+    replyBatchSilenceMs: cfg.replyBatchSilenceMs,
+    replyBatchMaxWaitMs: cfg.replyBatchMaxWaitMs,
+    replySkipBiasPercent: cfg.replySkipBiasPercent,
+    replyCountWeights: [
+      cfg.replyCountWeight1,
+      cfg.replyCountWeight2,
+      cfg.replyCountWeight3,
+      cfg.replyCountWeight4,
+    ],
     maxReplyChunks: cfg.maxReplyChunks,
     maxChunkChars: cfg.maxChunkChars,
     replyDelay: {

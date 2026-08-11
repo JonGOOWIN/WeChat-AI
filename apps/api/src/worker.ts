@@ -68,8 +68,12 @@ import {
   type ChatService,
   type HumanDelayOptions,
   type P2PServiceOptions,
+  type P2PHandleResult,
   type PromptAttachment,
   type ReplyPart,
+  planAdaptiveReply,
+  WeightedReplyCountSelector,
+  type ReplyCountSelector,
 } from "@wechat-ai/core";
 import {
   planInboundMedia,
@@ -85,6 +89,11 @@ import {
   type AdminSendResult,
 } from "./broadcast-runner.js";
 import { emitActivity, previewText } from "./activity-stream.js";
+import {
+  AdaptiveReplyBatcher,
+  type AdaptiveReplyBatch,
+  type BatchClock,
+} from "./adaptive-reply-batcher.js";
 
 /**
  * How often a node sweeps the load-weight hash (refresh live entries, delete
@@ -136,6 +145,12 @@ export interface BroadcastWorkerConfig {
  */
 type LocalInboundJob = InboundJob & {
   mediaRefs?: InboundMediaRef[];
+  batchItems?: LocalInboundJob[];
+  p2pChecked?: boolean;
+  p2pResult?: P2PHandleResult;
+  rateChecked?: boolean;
+  rateLimited?: boolean;
+  preflightResult?: Awaited<ReturnType<ChatService["preflightInbound"]>>;
 };
 
 export interface WorkerOptions {
@@ -160,6 +175,14 @@ export interface WorkerOptions {
   inboxMaxLen?: number;
   /** multi-bubble human-like reply */
   splitReply?: boolean;
+  /** RULE-001 ordinary conversation batching. */
+  replyBatchSilenceMs?: number;
+  replyBatchMaxWaitMs?: number;
+  replySkipBiasPercent?: number;
+  replyCountWeights?: readonly [number, number, number, number];
+  replyCountSelector?: ReplyCountSelector;
+  /** Injectable only for deterministic tests; production uses the system clock. */
+  replyBatchClock?: BatchClock;
   maxReplyChunks?: number;
   maxChunkChars?: number;
   /** typing delay tuning */
@@ -298,6 +321,10 @@ export class BotWorkerManager {
   private inboxWaiters: Array<() => void> = [];
   /** Serialize replies per bot:peer so bubbles stay ordered. */
   private peerChains = new Map<string, Promise<void>>();
+  private readonly adaptiveBatcher: AdaptiveReplyBatcher;
+  private replySkipBiasPercent: number;
+  private replyCountWeights: [number, number, number, number];
+  private readonly replyCountSelector: ReplyCountSelector;
 
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
   private replyWorkers: Promise<void>[] = [];
@@ -358,6 +385,23 @@ export class BotWorkerManager {
     if (this.p2pEnabled) {
       this.p2p = new P2PService(opts.db, opts.p2p ?? {});
     }
+    this.replySkipBiasPercent = clampPercent(opts.replySkipBiasPercent ?? 10);
+    this.replyCountWeights = normalizeReplyCountWeights(opts.replyCountWeights);
+    this.replyCountSelector =
+      opts.replyCountSelector ?? new WeightedReplyCountSelector();
+    this.adaptiveBatcher = new AdaptiveReplyBatcher({
+      silenceMs: opts.replyBatchSilenceMs ?? 10_000,
+      maxWaitMs: opts.replyBatchMaxWaitMs ?? 20_000,
+      clock: opts.replyBatchClock,
+      onClose: (batch) => this.enqueueClosedBatch(batch),
+      onError: (error, batch) => {
+        this.opts.log?.(
+          `[worker] batch close failed batch=${batch.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      },
+    });
   }
 
   getWorkerId(): string {
@@ -391,6 +435,10 @@ export class BotWorkerManager {
     inboundMediaMaxBytes?: number;
     voiceTranscriptEnabled?: boolean;
     splitReply?: boolean;
+    replyBatchSilenceMs?: number;
+    replyBatchMaxWaitMs?: number;
+    replySkipBiasPercent?: number;
+    replyCountWeights?: readonly [number, number, number, number];
     replyDelay?: HumanDelayOptions;
     peerRatePerMinute?: number;
     maxBotsPerWorker?: number;
@@ -435,6 +483,23 @@ export class BotWorkerManager {
       this.opts.voiceTranscriptEnabled = patch.voiceTranscriptEnabled;
     }
     if (patch.splitReply !== undefined) this.opts.splitReply = patch.splitReply;
+    if (
+      patch.replyBatchSilenceMs !== undefined ||
+      patch.replyBatchMaxWaitMs !== undefined
+    ) {
+      this.adaptiveBatcher.applyRuntimeOptions({
+        silenceMs: patch.replyBatchSilenceMs,
+        maxWaitMs: patch.replyBatchMaxWaitMs,
+      });
+    }
+    if (patch.replySkipBiasPercent !== undefined) {
+      this.replySkipBiasPercent = clampPercent(patch.replySkipBiasPercent);
+    }
+    if (patch.replyCountWeights !== undefined) {
+      this.replyCountWeights = normalizeReplyCountWeights(
+        patch.replyCountWeights,
+      );
+    }
     if (patch.replyDelay !== undefined) this.opts.replyDelay = patch.replyDelay;
     if (patch.nodeLabel !== undefined) this.opts.nodeLabel = patch.nodeLabel;
     if (patch.nodeRegion !== undefined) this.opts.nodeRegion = patch.nodeRegion;
@@ -648,6 +713,7 @@ export class BotWorkerManager {
 
   async start(): Promise<void> {
     this.stopped = false;
+    this.adaptiveBatcher.start();
     this.runtimeActive = true;
     this.startError = null;
 
@@ -976,6 +1042,7 @@ export class BotWorkerManager {
     this.proactive = null;
     this.broadcast?.stop();
     this.broadcast = null;
+    this.adaptiveBatcher.stop();
     this.stopWakeSubscriber();
     if (this.leaseTimer) {
       clearInterval(this.leaseTimer);
@@ -1801,7 +1868,7 @@ export class BotWorkerManager {
         // Dedup in enqueueFromMessage absorbs any restart replay.
         const msgs = res.msgs ?? [];
         for (const msg of msgs) {
-          await this.enqueueFromMessage(botId, client, msg);
+          await this.acceptInboundMessage(botId, client, msg);
         }
         // Never accept empty string — that is the first-call sentinel and would
         // rewind the stream, replaying the entire backlog as new jobs.
@@ -1927,11 +1994,13 @@ export class BotWorkerManager {
     return true;
   }
 
-  private async enqueueFromMessage(
+  /** Public inbound seam used by the poll adapter and deterministic tests. */
+  async acceptInboundMessage(
     botId: string,
     client: ILinkClient,
     msg: WeixinMessage,
   ): Promise<void> {
+    if (!this.clients.has(botId)) this.clients.set(botId, client);
     if (!isUserInbound(msg)) return;
     const peerId = msg.from_user_id;
     const contextToken = msg.context_token;
@@ -1972,33 +2041,6 @@ export class BotWorkerManager {
       return;
     }
 
-    // Typing ASAP; reply path may be delayed by queue. First call per peer also
-    // fetches the typing_ticket, which is then cached for ~20h.
-    void client
-      .startTyping({ toUserId: peerId, contextToken })
-      .catch(() => undefined);
-
-    if (this.inbox.length >= this.inboxMaxLen) {
-      this.inboxDropped++;
-      this.lastInboxDropAt = new Date().toISOString();
-      this.opts.log?.(
-        `[worker] inbox full (${this.inboxMaxLen}), drop msg bot=${botId} peer=${peerId} dropped=${this.inboxDropped}`,
-      );
-      emitActivity({
-        type: "worker.inbox_drop",
-        level: "warn",
-        source: this.workerId,
-        summary: `inbox full drop bot=${botId} peer=${peerId} total=${this.inboxDropped}`,
-        data: {
-          botId,
-          peerId,
-          inboxMaxLen: this.inboxMaxLen,
-          dropped: this.inboxDropped,
-        },
-      });
-      return;
-    }
-
     const job: LocalInboundJob = {
       id: `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
       botId,
@@ -2023,6 +2065,133 @@ export class BotWorkerManager {
         mediaOnly: !!mediaOnly,
       }),
     });
+
+    // Rate limits are also outside RULE-001: claim once per inbound item before
+    // either immediate P2P handling or ordinary batching.
+    job.rateChecked = true;
+    const rateKey = `${botId}:${peerId}`;
+    if (!this.peerLimiter.tryTake(rateKey)) {
+      job.rateLimited = true;
+      void client
+        .startTyping({ toUserId: peerId, contextToken })
+        .catch(() => undefined);
+      this.pushInbox(job);
+      return;
+    }
+
+    // P2P is explicitly outside RULE-001. Resolve it before the ordinary-chat
+    // batcher so commands and active relays keep their immediate semantics.
+    if (this.p2pEnabled && this.p2p) {
+      job.p2pChecked = true;
+      try {
+        const result = await this.p2p.handleInbound({
+          botId,
+          peerId,
+          text: job.text,
+          mediaOnly: job.mediaOnly || !job.text.trim(),
+        });
+        if (result.handled) {
+          job.p2pResult = result;
+          void client
+            .startTyping({ toUserId: peerId, contextToken })
+            .catch(() => undefined);
+          this.pushInbox(job);
+          return;
+        }
+      } catch (err) {
+        this.opts.log?.(
+          `[worker] p2p preflight failed peer=${peerId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    try {
+      const preflight = await this.opts.chat.preflightInbound({
+        botAccountId: botId,
+        peerId,
+        text: job.text,
+      });
+      if (preflight) {
+        job.preflightResult = preflight;
+        void client
+          .startTyping({ toUserId: peerId, contextToken })
+          .catch(() => undefined);
+        this.pushInbox(job);
+        return;
+      }
+    } catch (err) {
+      this.opts.log?.(
+        `[worker] inbound preflight failed peer=${peerId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    this.adaptiveBatcher.add({
+      id: job.id,
+      botId,
+      peerId,
+      contextToken,
+      text: job.text,
+      attachments: [],
+      payload: job,
+    });
+  }
+
+  private enqueueClosedBatch(batch: AdaptiveReplyBatch): void {
+    const items = batch.items
+      .map((item) => item.payload)
+      .filter((item): item is LocalInboundJob => Boolean(item));
+    if (!items.length || this.stopped) return;
+    const newest = items.at(-1)!;
+    const job: LocalInboundJob = {
+      ...newest,
+      id: batch.id,
+      text: renderBatchText(items),
+      mediaOnly: items.every((item) => item.mediaOnly),
+      mediaRefs: items.flatMap((item) => item.mediaRefs ?? []),
+      batchItems: items,
+      p2pChecked: true,
+      rateChecked: true,
+    };
+    emitActivity({
+      type: "message.batch",
+      source: this.workerId,
+      summary: `batch closed bot=${job.botId} peer=${job.peerId} items=${items.length}`,
+      data: {
+        batchId: batch.id,
+        botId: job.botId,
+        peerId: job.peerId,
+        itemCount: items.length,
+        waitMs: batch.closedAtMs - batch.openedAtMs,
+      },
+    });
+    this.pushInbox(job);
+  }
+
+  private pushInbox(job: LocalInboundJob): void {
+    if (this.inbox.length >= this.inboxMaxLen) {
+      this.inboxDropped++;
+      this.lastInboxDropAt = new Date().toISOString();
+      this.opts.log?.(
+        `[worker] inbox full (${this.inboxMaxLen}), drop job bot=${job.botId} peer=${job.peerId} dropped=${this.inboxDropped}`,
+      );
+      emitActivity({
+        type: "worker.inbox_drop",
+        level: "warn",
+        source: this.workerId,
+        summary: `inbox full drop bot=${job.botId} peer=${job.peerId} total=${this.inboxDropped}`,
+        data: {
+          botId: job.botId,
+          peerId: job.peerId,
+          inboxMaxLen: this.inboxMaxLen,
+          dropped: this.inboxDropped,
+        },
+      });
+      return;
+    }
     this.inbox.push(job);
     if (this.inbox.length > this.inboxPeak) {
       this.inboxPeak = this.inbox.length;
@@ -2067,12 +2236,19 @@ export class BotWorkerManager {
     void idx;
   }
 
+  /** Process one queued closed batch; consumers call the same path in start(). */
+  async processNextReply(): Promise<boolean> {
+    const job = this.inbox.shift();
+    if (!job) return false;
+    await this.enqueuePeerChain(job.botId, job.peerId, () => this.handleJob(job));
+    return true;
+  }
+
   /**
    * Every exit path clears the typing indicator.
    *
-   * enqueueFromMessage fires startTyping before the job is queued, so if a
-   * rejection, rate limit, P2P relay hand-off, or crash returned without a stop
-   * the peer would keep seeing "对方正在输入中" until the server timed it out.
+   * Ordinary chat starts typing only after its batch closes. P2P remains
+   * immediate. Either way, rejection, rate limit or a crash must clear it.
    */
   private async handleJob(job: LocalInboundJob): Promise<void> {
     const client = this.clients.get(job.botId);
@@ -2121,7 +2297,10 @@ export class BotWorkerManager {
     }
 
     const rateKey = `${job.botId}:${job.peerId}`;
-    if (!this.peerLimiter.tryTake(rateKey)) {
+    if (
+      job.rateLimited ||
+      (!job.rateChecked && !this.peerLimiter.tryTake(rateKey))
+    ) {
       try {
         const rateText = "你发得太快啦，请稍等一会儿再聊～";
         await client.sendText({
@@ -2153,12 +2332,16 @@ export class BotWorkerManager {
     // ── P2P intercept (no LLM) ───────────────────────────
     if (this.p2pEnabled && this.p2p) {
       try {
-        const p2pResult = await this.p2p.handleInbound({
-          botId: job.botId,
-          peerId: job.peerId,
-          text: job.text,
-          mediaOnly: job.mediaOnly || !job.text.trim(),
-        });
+        const p2pResult =
+          job.p2pResult ??
+          (job.p2pChecked
+            ? { handled: false, localReplies: [], remoteSends: [] }
+            : await this.p2p.handleInbound({
+                botId: job.botId,
+                peerId: job.peerId,
+                text: job.text,
+                mediaOnly: job.mediaOnly || !job.text.trim(),
+              }));
         if (p2pResult.handled) {
           for (const text of p2pResult.localReplies) {
             if (!text?.trim()) continue;
@@ -2212,12 +2395,80 @@ export class BotWorkerManager {
       }
     }
 
+    if (job.preflightResult) {
+      const result = job.preflightResult;
+      if (result.text) {
+        await client.sendText({
+          toUserId: job.peerId,
+          text: result.text,
+          contextToken: job.contextToken,
+        });
+      }
+      this.jobsProcessed++;
+      emitActivity({
+        type: result.kind === "reject" ? "message.reject" : "message.out",
+        level: result.kind === "reject" ? "warn" : "info",
+        source: this.workerId,
+        summary: `system ${result.kind} bot=${job.botId} peer=${job.peerId}`,
+        data: {
+          botId: job.botId,
+          peerId: job.peerId,
+          jobId: job.id,
+          reason: "preflight",
+          ms: Date.now() - t0,
+        },
+      });
+      return;
+    }
+
+    const sourceItems = job.batchItems ?? [job];
+    const replyPlan = planAdaptiveReply(
+      sourceItems.map((item) => ({
+        id: item.id,
+        text: item.text,
+        hasAttachments: (item.mediaRefs?.length ?? 0) > 0,
+      })),
+      {
+        skipBiasPercent: this.replySkipBiasPercent,
+        replyCountWeights: this.replyCountWeights,
+        selector: this.replyCountSelector,
+      },
+    );
+    if (replyPlan.decision === "skip") {
+      this.jobsProcessed++;
+      emitActivity({
+        type: "message.batch_decision",
+        source: this.workerId,
+        summary: `batch skip bot=${job.botId} peer=${job.peerId}`,
+        data: {
+          batchId: job.id,
+          botId: job.botId,
+          peerId: job.peerId,
+          itemCount: sourceItems.length,
+          decision: replyPlan.decision,
+          reason: replyPlan.reason,
+          coveredItemIds: replyPlan.coveredItemIds,
+          partCount: 0,
+        },
+      });
+      return;
+    }
+
     // Fetch + decrypt attachments here rather than in the poll loop: the long
     // poll must stay responsive, and this is already the serialized per-peer
     // chain where the LLM call happens.
-    const attachments = job.mediaRefs?.length
-      ? await this.buildAttachments(client, job, job.mediaRefs)
-      : [];
+    const preparedBatchItems: Array<{
+      id: string;
+      text: string;
+      attachments: PromptAttachment[];
+    }> = [];
+    for (const item of sourceItems) {
+      const attachments = item.mediaRefs?.length
+        ? await this.buildAttachments(client, item, item.mediaRefs)
+        : [];
+      preparedBatchItems.push({ id: item.id, text: item.text, attachments });
+    }
+    const attachments = preparedBatchItems.flatMap((item) => item.attachments);
 
     // Nothing the model could respond to: no text, and no attachment it can
     // actually perceive. Answer from a canned line instead of burning a turn.
@@ -2249,6 +2500,8 @@ export class BotWorkerManager {
         text: job.text.trim(),
         contextToken: job.contextToken,
         attachments,
+        batchItems: preparedBatchItems,
+        replyPlan,
       });
 
       if (result.kind === "reject" && result.text) {
@@ -2279,6 +2532,12 @@ export class BotWorkerManager {
               : result.text
                 ? [{ kind: "text" as const, text: result.text }]
                 : [];
+        if (parts.length > 4) {
+          this.opts.log?.(
+            `[worker] invalid adaptive reply batch=${job.id} parts=${parts.length}`,
+          );
+          parts = [];
+        }
         // Worker-side validation: never send raw sticker JSON as text
         parts = sanitizePartsStripStickerJson(parts, this.maxStickersPerReply());
         if (parts.length === 0) {
@@ -2330,6 +2589,11 @@ export class BotWorkerManager {
               personaId: result.personaId,
               personaSlug: result.personaSlug,
               jobId: job.id,
+              batchId: job.id,
+              itemCount: sourceItems.length,
+              decision: "reply",
+              decisionReason: replyPlan.reason,
+              coveredItemIds: replyPlan.coveredItemIds,
               ms: Date.now() - t0,
             }),
           });
@@ -2343,6 +2607,11 @@ export class BotWorkerManager {
               personaId: result.personaId,
               personaSlug: result.personaSlug,
               jobId: job.id,
+              batchId: job.id,
+              itemCount: sourceItems.length,
+              decision: "reply",
+              decisionReason: replyPlan.reason,
+              coveredItemIds: replyPlan.coveredItemIds,
               ms: Date.now() - t0,
               parts: parts.length,
             },
@@ -2590,6 +2859,34 @@ export class BotWorkerManager {
       // Do not fail the whole chain — skip this bubble
     }
   }
+}
+
+function renderBatchText(items: readonly LocalInboundJob[]): string {
+  if (items.length === 1) return items[0]!.text.trim();
+  return items
+    .map((item, index) => {
+      const body = item.text.trim() || (item.mediaOnly ? "[附件]" : "");
+      return `[消息 ${index + 1}/${items.length}]\n${body}`;
+    })
+    .join("\n\n");
+}
+
+function clampPercent(value: number): number {
+  return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 10;
+}
+
+function normalizeReplyCountWeights(
+  weights: readonly number[] | undefined,
+): [number, number, number, number] {
+  if (
+    !weights ||
+    weights.length !== 4 ||
+    weights.some((weight) => !Number.isFinite(weight) || weight < 0) ||
+    weights.every((weight) => weight === 0)
+  ) {
+    return [50, 30, 15, 5];
+  }
+  return [weights[0]!, weights[1]!, weights[2]!, weights[3]!];
 }
 
 function rand(a: number, b: number): number {

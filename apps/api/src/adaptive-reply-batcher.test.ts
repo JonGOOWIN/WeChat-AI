@@ -40,6 +40,17 @@ class FakeClock implements BatchClock {
     this.nowMs = target;
     await Promise.resolve();
   }
+
+  fireDueSynchronously(ms: number): void {
+    this.nowMs += ms;
+    const due = [...this.timers.entries()]
+      .filter(([, timer]) => timer.at <= this.nowMs)
+      .sort((a, b) => a[1].at - b[1].at || a[0] - b[0]);
+    for (const [id, timer] of due) {
+      this.timers.delete(id);
+      timer.callback();
+    }
+  }
 }
 
 describe("AdaptiveReplyBatcher", () => {
@@ -127,7 +138,7 @@ describe("AdaptiveReplyBatcher", () => {
     assert.equal(closed.length, 1);
   });
 
-  it("cancels pending batches on stop without invoking conversation", async () => {
+  it("flushes a quiet pending batch exactly once on stop", async () => {
     const clock = new FakeClock();
     const closed: AdaptiveReplyBatch[] = [];
     const batcher = new AdaptiveReplyBatcher({
@@ -145,10 +156,39 @@ describe("AdaptiveReplyBatcher", () => {
       attachments: [],
     });
 
-    batcher.stop();
+    await batcher.stop();
     await clock.advance(30_000);
 
-    assert.deepEqual(closed, []);
+    assert.equal(closed.length, 1);
+    assert.deepEqual(closed[0]!.items.map((item) => item.id), ["m1"]);
+  });
+
+  it("delivers a timer-close callback even when stop follows before a microtask", async () => {
+    const clock = new FakeClock();
+    let delivered = 0;
+    let workerStopped = false;
+    const batcher = new AdaptiveReplyBatcher({
+      silenceMs: 1,
+      clock,
+      onClose: () => {
+        if (!workerStopped) delivered++;
+      },
+    });
+    batcher.add({
+      id: "m1",
+      botId: "bot-a",
+      peerId: "peer-a",
+      contextToken: "token",
+      text: "问题？",
+      attachments: [],
+    });
+
+    clock.fireDueSynchronously(1);
+    workerStopped = true;
+    const stopping = batcher.stop();
+    await stopping;
+
+    assert.equal(delivered, 1);
   });
 
   it("honours the hard deadline despite continued arrivals", async () => {

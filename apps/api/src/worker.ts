@@ -1036,13 +1036,21 @@ export class BotWorkerManager {
    * actually completes before the process exits.
    */
   stop(): void {
+    // Adaptive stop invokes close callbacks synchronously before awaiting their
+    // promises. Flush while the worker is still accepting those callbacks;
+    // otherwise the stopped gate below would discard already-claimed inbound.
+    void this.adaptiveBatcher.stop();
+    this.beginStopping();
+    this.finishStopping();
+  }
+
+  private beginStopping(): void {
     this.stopped = true;
     this.runtimeActive = false;
     this.proactive?.stop();
     this.proactive = null;
     this.broadcast?.stop();
     this.broadcast = null;
-    this.adaptiveBatcher.stop();
     this.stopWakeSubscriber();
     if (this.leaseTimer) {
       clearInterval(this.leaseTimer);
@@ -1052,10 +1060,13 @@ export class BotWorkerManager {
       this.nextGen(id);
     }
     this.loops.clear();
-    this.clients.clear();
     // Wake reply consumers so they can exit
     for (const w of this.inboxWaiters) w();
     this.inboxWaiters = [];
+  }
+
+  private finishStopping(): void {
+    this.clients.clear();
     this.unregisterPromise = unregisterWorker(
       this.opts.db,
       this.workerId,
@@ -1071,12 +1082,29 @@ export class BotWorkerManager {
    * re-claiming this node's bots.
    */
   async stopAsync(timeoutMs = 5000): Promise<void> {
-    this.stop();
+    const deadline = Date.now() + Math.max(1, timeoutMs);
+    const drain = this.adaptiveBatcher.stop();
+    this.beginStopping();
+    await waitWithin(drain, deadline);
+
+    // Consumers stop taking new work once `stopped` flips. Drain the flushed
+    // jobs explicitly while clients/context tokens are still available.
+    while (this.inbox.length > 0 && Date.now() < deadline) {
+      const completed = await waitWithin(this.processNextReply(), deadline);
+      if (!completed) break;
+    }
+    if (this.peerChains.size > 0 && Date.now() < deadline) {
+      await waitWithin(Promise.all([...this.peerChains.values()]), deadline);
+    }
+    if (this.inbox.length > 0 || this.peerChains.size > 0) {
+      this.opts.log?.(
+        `[worker] bounded shutdown drain timed out inbox=${this.inbox.length} peers=${this.peerChains.size}`,
+      );
+    }
+
+    this.finishStopping();
     if (!this.unregisterPromise) return;
-    await Promise.race([
-      this.unregisterPromise,
-      new Promise<void>((r) => setTimeout(r, timeoutMs).unref?.()),
-    ]);
+    await waitWithin(this.unregisterPromise, deadline);
   }
 
   /** Subscribe to fleet wake channel so new bots attach without waiting full lease tick. */
@@ -2072,10 +2100,11 @@ export class BotWorkerManager {
     const rateKey = `${botId}:${peerId}`;
     if (!this.peerLimiter.tryTake(rateKey)) {
       job.rateLimited = true;
-      void client
-        .startTyping({ toUserId: peerId, contextToken })
-        .catch(() => undefined);
-      this.pushInbox(job);
+      if (this.pushInbox(job)) {
+        void client
+          .startTyping({ toUserId: peerId, contextToken })
+          .catch(() => undefined);
+      }
       return;
     }
 
@@ -2092,10 +2121,11 @@ export class BotWorkerManager {
         });
         if (result.handled) {
           job.p2pResult = result;
-          void client
-            .startTyping({ toUserId: peerId, contextToken })
-            .catch(() => undefined);
-          this.pushInbox(job);
+          if (this.pushInbox(job)) {
+            void client
+              .startTyping({ toUserId: peerId, contextToken })
+              .catch(() => undefined);
+          }
           return;
         }
       } catch (err) {
@@ -2115,10 +2145,11 @@ export class BotWorkerManager {
       });
       if (preflight) {
         job.preflightResult = preflight;
-        void client
-          .startTyping({ toUserId: peerId, contextToken })
-          .catch(() => undefined);
-        this.pushInbox(job);
+        if (this.pushInbox(job)) {
+          void client
+            .startTyping({ toUserId: peerId, contextToken })
+            .catch(() => undefined);
+        }
         return;
       }
     } catch (err) {
@@ -2144,7 +2175,7 @@ export class BotWorkerManager {
     const items = batch.items
       .map((item) => item.payload)
       .filter((item): item is LocalInboundJob => Boolean(item));
-    if (!items.length || this.stopped) return;
+    if (!items.length) return;
     const newest = items.at(-1)!;
     const job: LocalInboundJob = {
       ...newest,
@@ -2171,7 +2202,7 @@ export class BotWorkerManager {
     this.pushInbox(job);
   }
 
-  private pushInbox(job: LocalInboundJob): void {
+  private pushInbox(job: LocalInboundJob): boolean {
     if (this.inbox.length >= this.inboxMaxLen) {
       this.inboxDropped++;
       this.lastInboxDropAt = new Date().toISOString();
@@ -2190,7 +2221,7 @@ export class BotWorkerManager {
           dropped: this.inboxDropped,
         },
       });
-      return;
+      return false;
     }
     this.inbox.push(job);
     if (this.inbox.length > this.inboxPeak) {
@@ -2198,6 +2229,7 @@ export class BotWorkerManager {
     }
     const w = this.inboxWaiters.shift();
     if (w) w();
+    return true;
   }
 
   // ── Reply ────────────────────────────────────────────
@@ -2429,6 +2461,7 @@ export class BotWorkerManager {
         hasAttachments: (item.mediaRefs?.length ?? 0) > 0,
       })),
       {
+        batchId: job.id,
         skipBiasPercent: this.replySkipBiasPercent,
         replyCountWeights: this.replyCountWeights,
         selector: this.replyCountSelector,
@@ -2878,13 +2911,17 @@ function clampPercent(value: number): number {
 function normalizeReplyCountWeights(
   weights: readonly number[] | undefined,
 ): [number, number, number, number] {
+  if (!weights) return [50, 30, 15, 5];
   if (
-    !weights ||
     weights.length !== 4 ||
-    weights.some((weight) => !Number.isFinite(weight) || weight < 0) ||
+    weights.some(
+      (weight) => !Number.isFinite(weight) || weight < 0 || weight > 10_000,
+    ) ||
     weights.every((weight) => weight === 0)
   ) {
-    return [50, 30, 15, 5];
+    throw new Error(
+      "reply count weights must be four finite non-negative values, not all zero",
+    );
   }
   return [weights[0]!, weights[1]!, weights[2]!, weights[3]!];
 }
@@ -2895,4 +2932,22 @@ function rand(a: number, b: number): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitWithin(
+  promise: Promise<unknown>,
+  deadlineMs: number,
+): Promise<boolean> {
+  const remaining = Math.max(0, deadlineMs - Date.now());
+  if (remaining === 0) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), remaining);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([promise.then(() => true as const), timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

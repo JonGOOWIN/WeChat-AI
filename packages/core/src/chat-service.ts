@@ -379,10 +379,12 @@ export class ChatService {
    * Second-pass filter (or legacy parse) → structured parts for WeChat send.
    * Records filter token usage when the filter LLM ran.
    */
-  private async finalizeReplyParts(params: {
+  /** Public deterministic seam shared by adaptive handling and contract tests. */
+  async finalizeReplyParts(params: {
     rawLlmText: string;
     stickers: StickerPromptEntry[];
     botAccountId: string;
+    adaptive?: boolean;
     ownerUserId?: string | null;
     ownerUsername?: string;
     botName?: string | null;
@@ -392,7 +394,10 @@ export class ChatService {
     displayText: string;
     bubblesFromJson: boolean;
   }> {
-    const maxBubbles = this.opts.maxReplyBubbles ?? 5;
+    const configuredMaxBubbles = this.opts.maxReplyBubbles ?? 5;
+    const maxBubbles = params.adaptive
+      ? Math.min(4, configuredMaxBubbles)
+      : configuredMaxBubbles;
     const maxChunkChars = this.opts.maxChunkChars ?? 72;
     const maxStickers = this.opts.maxStickersPerReply ?? 2;
     const raw = (params.rawLlmText ?? "").trim();
@@ -415,12 +420,38 @@ export class ChatService {
           botName: params.botName ?? undefined,
         });
       }
-      const parts =
-        filtered.parts.length > 0
-          ? filtered.parts
-          : raw
-            ? [{ kind: "text" as const, text: raw }]
-            : [];
+      if (params.adaptive && filtered.usedFallback) {
+        return {
+          parts: [],
+          bubbles: [],
+          displayText: "",
+          bubblesFromJson: false,
+        };
+      }
+      if (
+        params.adaptive &&
+        filtered.parts.length === 1 &&
+        filtered.parts[0]?.kind === "text"
+      ) {
+        const envelope = parseMultiBubbleReply(filtered.parts[0].text, {
+          maxBubbles,
+          maxChunkChars,
+          maxStickers,
+          fallbackSplit: true,
+          expandLongBubbles: true,
+        });
+        if (envelope.fromJson && envelope.parts.length === 0) {
+          return {
+            parts: [],
+            bubbles: [],
+            displayText: "",
+            bubblesFromJson: true,
+          };
+        }
+      }
+      const rawFallback =
+        !params.adaptive && raw ? [{ kind: "text" as const, text: raw }] : [];
+      const parts = filtered.parts.length > 0 ? filtered.parts : rawFallback;
       const bubbles =
         filtered.bubbles.length > 0
           ? filtered.bubbles
@@ -428,7 +459,7 @@ export class ChatService {
               p.kind === "text" ? p.text : `[表情:${p.slug}]`,
             );
       const displayText =
-        filtered.displayText || bubbles.join("\n") || raw;
+        filtered.displayText || bubbles.join("\n") || (params.adaptive ? "" : raw);
       return {
         parts,
         bubbles,
@@ -461,7 +492,7 @@ export class ChatService {
         ? parts.map((p) =>
             p.kind === "text" ? p.text : `[表情:${p.slug}]`,
           )
-        : raw
+        : !params.adaptive && raw
           ? [raw]
           : [];
     const displayText =
@@ -763,6 +794,7 @@ export class ChatService {
       rawLlmText,
       stickers,
       botAccountId: req.botAccountId,
+      adaptive: Boolean(req.replyPlan),
       ownerUserId: bot?.owner_user_id,
       ownerUsername: owner?.username,
       botName: bot?.display_name,
@@ -771,7 +803,7 @@ export class ChatService {
 
     // Adaptive plans are a stricter public contract than legacy single turns.
     // Fail closed before storing or sending an assistant turn.
-    if (req.replyPlan && parts.length > 4) {
+    if (req.replyPlan && (parts.length === 0 || !displayText.trim())) {
       return { kind: "skip", skipReason: "invalid_reply_plan" };
     }
 

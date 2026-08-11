@@ -304,4 +304,46 @@ describe("BotWorkerManager adaptive reply seam", () => {
     assert.equal(await worker.processNextReply(), true);
     assert.deepEqual(sent, ["尚未批准"]);
   });
+
+  it("clears typing when an immediate preflight job is dropped by a full inbox", async () => {
+    const clock = new FakeClock();
+    let starts = 0;
+    let stops = 0;
+    const worker = new BotWorkerManager({
+      db: {
+        redis: { set: async () => "OK" },
+      } as unknown as Db,
+      chat: {
+        async preflightInbound() {
+          return { kind: "reject" as const, text: "尚未批准" };
+        },
+      } as unknown as ChatService,
+      p2pEnabled: false,
+      peerRatePerMinute: 1_000,
+      inboxMaxLen: 100,
+      replyBatchClock: clock,
+    });
+    const client = {
+      async startTyping() {
+        starts++;
+      },
+      async stopTyping() {
+        stops++;
+      },
+    } as unknown as ILinkClient;
+
+    for (let index = 0; index < 101; index++) {
+      await worker.acceptInboundMessage(
+        "bot-a",
+        client,
+        inbound(`消息-${index}`, `token-${index}`, index + 1),
+      );
+    }
+
+    assert.equal(
+      starts - stops,
+      100,
+      "only the 100 queued jobs may leave typing active",
+    );
+  });
 });

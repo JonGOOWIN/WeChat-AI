@@ -39,6 +39,7 @@ export interface AdaptiveReplyBatcherOptions {
   clock?: BatchClock;
   onClose: (batch: AdaptiveReplyBatch) => Promise<void> | void;
   onError?: (error: unknown, batch: AdaptiveReplyBatch) => void;
+  drainTimeoutMs?: number;
 }
 
 interface OpenBatch {
@@ -58,8 +59,10 @@ export class AdaptiveReplyBatcher {
   private readonly onError: AdaptiveReplyBatcherOptions["onError"];
   private silenceMs: number;
   private maxWaitMs: number;
+  private readonly drainTimeoutMs: number;
   private sequence = 0;
   private open = new Map<string, OpenBatch>();
+  private deliveries = new Set<Promise<void>>();
   private stopped = false;
 
   constructor(options: AdaptiveReplyBatcherOptions) {
@@ -68,6 +71,7 @@ export class AdaptiveReplyBatcher {
     this.onError = options.onError;
     this.silenceMs = positiveMs(options.silenceMs, 10_000);
     this.maxWaitMs = positiveMs(options.maxWaitMs, 20_000);
+    this.drainTimeoutMs = positiveMs(options.drainTimeoutMs, 5_000);
   }
 
   applyRuntimeOptions(options: {
@@ -109,12 +113,12 @@ export class AdaptiveReplyBatcher {
     this.stopped = false;
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
-    for (const batch of this.open.values()) {
-      if (batch.timer !== undefined) this.clock.clearTimeout(batch.timer);
+    for (const [key, batch] of [...this.open]) {
+      this.close(key, batch);
     }
-    this.open.clear();
+    await Promise.all([...this.deliveries]);
   }
 
   private arm(key: string, batch: OpenBatch): void {
@@ -143,11 +147,30 @@ export class AdaptiveReplyBatcher {
       closedAtMs: this.clock.now(),
       items: expected.items,
     };
-    void Promise.resolve()
-      .then(() => this.onClose(closed))
+    let callback: Promise<void>;
+    try {
+      callback = Promise.resolve(this.onClose(closed));
+    } catch (error) {
+      this.onError?.(error, closed);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`batch drain timed out after ${this.drainTimeoutMs}ms`)),
+        this.drainTimeoutMs,
+      );
+      timer.unref?.();
+    });
+    const delivery = Promise.race([callback, timeout])
       .catch((error) => {
         this.onError?.(error, closed);
+      })
+      .finally(() => {
+        if (timer) clearTimeout(timer);
+        this.deliveries.delete(delivery);
       });
+    this.deliveries.add(delivery);
   }
 }
 

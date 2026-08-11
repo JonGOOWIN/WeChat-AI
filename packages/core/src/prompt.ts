@@ -142,9 +142,6 @@ export interface BatchPromptItem {
 export function buildBatchUserContent(
   items: readonly BatchPromptItem[],
 ): string | ChatContentPart[] {
-  if (items.length === 1) {
-    return buildUserContent(items[0]!.text, items[0]!.attachments);
-  }
   const out: ChatContentPart[] = [];
   for (let index = 0; index < items.length; index++) {
     const item = items[index]!;

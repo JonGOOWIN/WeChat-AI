@@ -12,6 +12,20 @@ class LastWeightedSelector implements ReplyCountSelector {
 }
 
 describe("planAdaptiveReply", () => {
+  it("chooses a stable reply count for the same batch and weights", () => {
+    const makePlan = () =>
+      planAdaptiveReply([{ id: "m1", text: "请给我建议？" }], {
+        batchId: "batch-stable",
+        skipBiasPercent: 10,
+        replyCountWeights: [25, 25, 25, 25],
+      });
+
+    const first = makePlan();
+    for (let attempt = 0; attempt < 20; attempt++) {
+      assert.equal(makePlan().targetPartCount, first.targetPartCount);
+    }
+  });
+
   it("never skips a direct question even when the skip bias is 100 percent", () => {
     const plan = planAdaptiveReply(
       [

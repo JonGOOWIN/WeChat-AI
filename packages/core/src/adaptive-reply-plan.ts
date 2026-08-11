@@ -30,16 +30,14 @@ export type AdaptiveReplyPlan = AdaptiveReplyPlanBase &
 
 export interface ReplyCountSelector {
   /** Return a zero-based bucket index for the supplied runtime weights. */
-  select(weights: readonly number[]): number;
+  select(weights: readonly number[], stableKey?: string): number;
 }
 
 export class WeightedReplyCountSelector implements ReplyCountSelector {
-  constructor(private readonly next: () => number = Math.random) {}
-
-  select(weights: readonly number[]): number {
+  select(weights: readonly number[], stableKey = ""): number {
     const normalized = normalizeWeights(weights);
     const total = normalized.reduce((sum, weight) => sum + weight, 0);
-    let point = Math.min(0.999999999999, Math.max(0, this.next())) * total;
+    let point = stableUnitInterval(stableKey) * total;
     for (let i = 0; i < normalized.length; i++) {
       point -= normalized[i]!;
       if (point < 0) return i;
@@ -49,9 +47,10 @@ export class WeightedReplyCountSelector implements ReplyCountSelector {
 }
 
 export interface AdaptiveReplyPlannerOptions {
+  batchId?: string;
   skipBiasPercent: number;
   replyCountWeights: readonly [number, number, number, number];
-  selector: ReplyCountSelector;
+  selector?: ReplyCountSelector;
 }
 
 export function planAdaptiveReply(
@@ -78,8 +77,12 @@ export function planAdaptiveReply(
     };
   }
 
-  const selected = options.selector.select(
+  const stableKey = `${options.batchId ?? ""}\u0000${sourceItems
+    .map((item) => item.id)
+    .join("\u0000")}`;
+  const selected = (options.selector ?? new WeightedReplyCountSelector()).select(
     normalizeWeights(options.replyCountWeights),
+    stableKey,
   );
   const targetPartCount =
     Number.isInteger(selected) && selected >= 0 && selected <= 3
@@ -187,4 +190,14 @@ function normalizeWeights(weights: readonly number[]): [number, number, number, 
 
 function clampPercent(value: number): number {
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 10;
+}
+
+/** FNV-1a: stable across processes and retries, unlike runtime-random hash seeds. */
+function stableUnitInterval(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) / 0x1_0000_0000;
 }

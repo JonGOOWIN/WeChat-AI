@@ -16,6 +16,15 @@ describe("parseFactsJson", () => {
 });
 
 describe("buildBatchUserContent", () => {
+  it("marks a single item with its covered message id", () => {
+    assert.deepEqual(
+      buildBatchUserContent([
+        { id: "only-id", text: "单条也要可追踪", attachments: [] },
+      ]),
+      [{ type: "text", text: "[消息 1/1 · only-id]\n单条也要可追踪" }],
+    );
+  });
+
   it("keeps message and attachment boundaries in arrival order", () => {
     assert.deepEqual(
       buildBatchUserContent([

@@ -160,4 +160,24 @@ describe("shipped defaults: adaptive reply batching follows RULE-001", () => {
       [5, 15, 30, 50],
     );
   });
+
+  it("rejects explicitly invalid or all-zero reply-count env weights", () => {
+    assert.throws(
+      () =>
+        loadConfig({ REPLY_COUNT_WEIGHTS: "0,0,0,0" } as NodeJS.ProcessEnv),
+      /reply count weights/i,
+    );
+    assert.throws(
+      () =>
+        loadConfig({
+          REPLY_COUNT_WEIGHT_2: "not-a-number",
+        } as NodeJS.ProcessEnv),
+      /REPLY_COUNT_WEIGHT_2/,
+    );
+    assert.throws(
+      () =>
+        loadConfig({ REPLY_COUNT_WEIGHTS: "50,,15,5" } as NodeJS.ProcessEnv),
+      /REPLY_COUNT_WEIGHTS/,
+    );
+  });
 });

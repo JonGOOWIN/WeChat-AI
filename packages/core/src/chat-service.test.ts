@@ -335,3 +335,166 @@ describe("ChatService multi-user isolation (Redis)", () => {
     await db.close();
   });
 });
+
+describe("ChatService adaptive reply finalization seam", () => {
+  const params = (rawLlmText: string) => ({
+    rawLlmText,
+    stickers: [],
+    botAccountId: "bot-adaptive",
+    adaptive: true,
+  });
+
+  it("does not turn an empty filter envelope back into raw wrapper text", async () => {
+    const emptyFilter = {
+      async chat() {
+        return '{"messages":[]}';
+      },
+      async chatWithUsage() {
+        return {
+          text: '{"messages":[]}',
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          model: "fake",
+        };
+      },
+    } as unknown as LlmClient;
+    const chat = new ChatService(
+      {} as never,
+      emptyFilter,
+      { replyFilterEnabled: true },
+    );
+    const result = await chat.finalizeReplyParts(
+      params('{"messages":["ignored primary"]}'),
+    );
+    assert.deepEqual(result.parts, []);
+    assert.equal(result.displayText, "");
+  });
+
+  it("keeps an adaptive empty-text envelope empty", async () => {
+    const chat = new ChatService({} as never, asLlm(new FakeLlm("unused")), {
+      replyFilterEnabled: false,
+    });
+    const result = await chat.finalizeReplyParts(
+      params('{"messages":["   "]}'),
+    );
+    assert.deepEqual(result.parts, []);
+    assert.equal(result.displayText, "");
+  });
+
+  it("truncates a valid five-part adaptive reply to four parts", async () => {
+    const chat = new ChatService({} as never, asLlm(new FakeLlm("unused")), {
+      replyFilterEnabled: false,
+      maxReplyBubbles: 5,
+    });
+    const result = await chat.finalizeReplyParts(
+      params('{"messages":["一","二","三","四","五"]}'),
+    );
+    assert.deepEqual(
+      result.parts.map((part) => (part.kind === "text" ? part.text : part.slug)),
+      ["一", "二", "三", "四"],
+    );
+  });
+});
+
+describe("ChatService adaptive reply public seam", () => {
+  it("skips empty outputs without assistant history and truncates five parts", async (t) => {
+    let db;
+    try {
+      db = openDatabase(redisUrl);
+      await Promise.race([
+        db.ping(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), 2500),
+        ),
+      ]);
+    } catch {
+      try {
+        await db?.close();
+      } catch {
+        /* ignore */
+      }
+      t.skip("Redis not available");
+      return;
+    }
+
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = `bot_adaptive_public_${Date.now()}`;
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "test",
+      botToken: "test-token",
+    });
+    const peers = ["empty-envelope", "empty-text", "five-parts"].map(
+      (name) => `${name}_${Date.now()}@im.wechat`,
+    );
+    for (const peerId of peers) {
+      await approvePeer(db, botId, peerId);
+      await setAssignment(db, botId, peerId, persona.id);
+    }
+
+    const chat = new ChatService(
+      db,
+      asLlm(
+        new FakeLlm([
+          '{"messages":[]}',
+          '{"messages":["   "]}',
+          '{"messages":["一","二","三","四","五"]}',
+        ]),
+      ),
+      {
+        allowUnapproved: false,
+        memoryExtractEveryN: 999,
+        replyFilterEnabled: false,
+        maxReplyBubbles: 5,
+      },
+    );
+    const plan = {
+      decision: "reply" as const,
+      targetPartCount: 2 as const,
+      coveredItemIds: ["m1"],
+      reason: "reply-obligation" as const,
+      skipBiasPercent: 10,
+      items: [
+        {
+          id: "m1",
+          kind: "new-question-or-request" as const,
+          replyObligation: true,
+        },
+      ],
+    };
+    const results = [];
+    for (const peerId of peers) {
+      results.push(
+        await chat.handleInbound({
+          botAccountId: botId,
+          peerId,
+          text: "请回答？",
+          contextToken: `token-${peerId}`,
+          batchItems: [{ id: "m1", text: "请回答？", attachments: [] }],
+          replyPlan: plan,
+        }),
+      );
+    }
+
+    assert.equal(results[0]!.kind, "skip");
+    assert.equal(results[1]!.kind, "skip");
+    assert.equal(results[2]!.kind, "reply");
+    assert.equal(results[2]!.parts?.length, 4);
+    for (const peerId of peers.slice(0, 2)) {
+      const history = await listRecentMessages(db, botId, peerId, 20);
+      assert.equal(
+        history.filter((message) => message.role === "assistant").length,
+        0,
+      );
+    }
+    const fiveHistory = await listRecentMessages(db, botId, peers[2]!, 20);
+    assert.equal(
+      fiveHistory.filter((message) => message.role === "assistant").length,
+      1,
+    );
+    await db.close();
+  });
+});

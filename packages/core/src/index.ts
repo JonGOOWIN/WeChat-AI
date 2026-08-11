@@ -8,6 +8,7 @@ export {
 export {
   applyPromptTemplate,
   buildAttachmentBlock,
+  buildBatchUserContent,
   buildBotIdentityBlock,
   buildChatMessages,
   buildImageCaptionMessages,
@@ -20,6 +21,7 @@ export {
   parseFactsJson,
   parseProactiveSkip,
   type AttachmentKind,
+  type BatchPromptItem,
   type PromptAttachment,
 } from "./prompt.js";
 export {
@@ -97,6 +99,15 @@ export {
 export {
   createDefaultChatflowGraph,
 } from "./chatflow/default-graph.js";
+export {
+  planAdaptiveReply,
+  WeightedReplyCountSelector,
+  type AdaptiveReplyPlan,
+  type AdaptiveReplyPlanItem,
+  type AdaptiveReplyPlannerOptions,
+  type BatchItemKind,
+  type ReplyCountSelector,
+} from "./adaptive-reply-plan.js";
 export {
   validateChatflowGraph,
   renderTemplate,

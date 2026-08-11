@@ -132,6 +132,43 @@ export function buildUserContent(
   return parts;
 }
 
+export interface BatchPromptItem {
+  id: string;
+  text: string;
+  attachments: PromptAttachment[];
+}
+
+/** One user turn whose message/attachment boundaries survive batching. */
+export function buildBatchUserContent(
+  items: readonly BatchPromptItem[],
+): string | ChatContentPart[] {
+  const out: ChatContentPart[] = [];
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index]!;
+    const marker = `[消息 ${index + 1}/${items.length} · ${item.id}]`;
+    const content = buildUserContent(item.text, item.attachments);
+    if (typeof content === "string") {
+      out.push({ type: "text", text: `${marker}\n${content}`.trimEnd() });
+      continue;
+    }
+    let marked = false;
+    for (const part of content) {
+      if (!marked && part.type === "text") {
+        out.push({ type: "text", text: `${marker}\n${part.text}`.trimEnd() });
+        marked = true;
+      } else {
+        if (!marked) {
+          out.push({ type: "text", text: marker });
+          marked = true;
+        }
+        out.push(part);
+      }
+    }
+    if (!marked) out.push({ type: "text", text: marker });
+  }
+  return out;
+}
+
 /**
  * Readable one-liner for conversation history. The bytes are never persisted,
  * so this is what later turns see — without it a follow-up like "所以呢？" loses
@@ -325,6 +362,11 @@ export function buildChatMessages(params: {
   timeToolEnabled?: boolean;
   /** Media attached to this message (images become content parts) */
   attachments?: PromptAttachment[];
+  batchItems?: readonly BatchPromptItem[];
+  adaptiveReplyPlan?: {
+    targetPartCount: 1 | 2 | 3 | 4;
+    coveredItemIds: readonly string[];
+  };
 }): ChatMessage[] {
   const botName = params.botName?.trim() || "助手";
   const personaBody = applyPromptTemplate(params.systemPrompt, { botName });
@@ -338,6 +380,15 @@ export function buildChatMessages(params: {
     multiBubbleJson: params.multiBubbleJson,
     stickers: params.stickers,
   });
+  const adaptiveReplyBlock = params.adaptiveReplyPlan
+    ? [
+        "## 本批次回覆計畫",
+        `- 建議自然回覆 ${params.adaptiveReplyPlan.targetPartCount} 条；语境需要时可少于该数量`,
+        `- 必须覆盖消息 ID：${params.adaptiveReplyPlan.coveredItemIds.join(", ")}`,
+        "- 不得为了凑条数机械拆句；每条都应像真人微信中的独立语意气泡",
+        "- 最多输出 4 条",
+      ].join("\n")
+    : "";
 
   const system = [
     identity,
@@ -346,6 +397,7 @@ export function buildChatMessages(params: {
     stickerBlock,
     timeBlock,
     attachmentBlock,
+    adaptiveReplyBlock,
     formatBlock,
   ]
     .filter(Boolean)
@@ -362,7 +414,9 @@ export function buildChatMessages(params: {
 
   messages.push({
     role: "user",
-    content: buildUserContent(params.userText, params.attachments),
+    content: params.batchItems?.length
+      ? buildBatchUserContent(params.batchItems)
+      : buildUserContent(params.userText, params.attachments),
   });
   return messages;
 }

@@ -134,6 +134,17 @@ export interface AppConfig {
   corsOrigins: Set<string>;
   /** Split AI reply into multiple WeChat bubbles */
   splitReply: boolean;
+  /** Quiet window before an ordinary AI batch closes. */
+  replyBatchSilenceMs: number;
+  /** Hard deadline measured from the first item in a batch. */
+  replyBatchMaxWaitMs: number;
+  /** Calibration target only; reply obligations always win. */
+  replySkipBiasPercent: number;
+  /** Runtime-injectable weights for reply plans containing 1, 2, 3 or 4 parts. */
+  replyCountWeight1: number;
+  replyCountWeight2: number;
+  replyCountWeight3: number;
+  replyCountWeight4: number;
   maxReplyChunks: number;
   maxChunkChars: number;
   /** Ask model to return {"messages":[...]} JSON bubbles */
@@ -323,6 +334,64 @@ export function resolveAppVersion(
   return fallback;
 }
 
+function positiveNumber(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function boundedNumber(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+}
+
+export function parseReplyCountWeights(
+  raw: string | undefined,
+): [number, number, number, number] {
+  if (raw === undefined) return [50, 30, 15, 5];
+  const parts = raw.split(",").map((part) => part.trim());
+  if (parts.some((part) => part.length === 0)) {
+    throw new Error("REPLY_COUNT_WEIGHTS: reply count weights cannot be blank");
+  }
+  const values = parts.map((part) => Number(part));
+  return assertReplyCountWeights(values, "REPLY_COUNT_WEIGHTS");
+}
+
+export function assertReplyCountWeights(
+  values: readonly number[],
+  source = "reply count weights",
+): [number, number, number, number] {
+  if (
+    values.length !== 4 ||
+    values.some(
+      (value) => !Number.isFinite(value) || value < 0 || value > 10_000,
+    ) ||
+    values.every((value) => value === 0)
+  ) {
+    throw new Error(
+      `${source}: reply count weights must be four finite non-negative values, not all zero`,
+    );
+  }
+  return [values[0]!, values[1]!, values[2]!, values[3]!];
+}
+
+function replyWeightOverride(
+  raw: string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!raw.trim() || !Number.isFinite(value) || value < 0 || value > 10_000) {
+    throw new Error(`${name}: reply count weight must be between 0 and 10000`);
+  }
+  return value;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const repoRoot = resolveRepoRoot();
   const port = Number(env.WECHAT_AI_PORT ?? "8787");
@@ -348,6 +417,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       }
     }
   }
+  const baseReplyCountWeights = parseReplyCountWeights(env.REPLY_COUNT_WEIGHTS);
+  const replyCountWeights = assertReplyCountWeights(
+    [
+      replyWeightOverride(
+        env.REPLY_COUNT_WEIGHT_1,
+        baseReplyCountWeights[0],
+        "REPLY_COUNT_WEIGHT_1",
+      ),
+      replyWeightOverride(
+        env.REPLY_COUNT_WEIGHT_2,
+        baseReplyCountWeights[1],
+        "REPLY_COUNT_WEIGHT_2",
+      ),
+      replyWeightOverride(
+        env.REPLY_COUNT_WEIGHT_3,
+        baseReplyCountWeights[2],
+        "REPLY_COUNT_WEIGHT_3",
+      ),
+      replyWeightOverride(
+        env.REPLY_COUNT_WEIGHT_4,
+        baseReplyCountWeights[3],
+        "REPLY_COUNT_WEIGHT_4",
+      ),
+    ],
+    "reply count weights from environment",
+  );
   return {
     host,
     port,
@@ -465,6 +560,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ),
     peerRatePerMinute: Number(env.PEER_RATE_PER_MINUTE ?? "20"),
     splitReply: env.SPLIT_REPLY !== "false",
+    replyBatchSilenceMs: positiveNumber(env.REPLY_BATCH_SILENCE_MS, 10_000),
+    replyBatchMaxWaitMs: positiveNumber(env.REPLY_BATCH_MAX_WAIT_MS, 20_000),
+    replySkipBiasPercent: boundedNumber(
+      env.REPLY_SKIP_BIAS_PERCENT,
+      10,
+      0,
+      100,
+    ),
+    replyCountWeight1: replyCountWeights[0],
+    replyCountWeight2: replyCountWeights[1],
+    replyCountWeight3: replyCountWeights[2],
+    replyCountWeight4: replyCountWeights[3],
     maxReplyChunks: Number(env.MAX_REPLY_CHUNKS ?? "5"),
     maxChunkChars: Number(env.MAX_CHUNK_CHARS ?? "72"),
     multiBubbleJson: env.MULTI_BUBBLE_JSON !== "false",

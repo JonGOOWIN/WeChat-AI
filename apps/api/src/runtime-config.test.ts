@@ -233,6 +233,62 @@ describe("RuntimeConfigManager", () => {
     assert.equal(cfg.chatflowMaxSteps, 200);
   });
 
+  it("rejects an all-zero reply-count patch before persisting or applying it", async () => {
+    await assert.rejects(
+      mgr.patch({
+        patch: {
+          replyCountWeight1: 0,
+          replyCountWeight2: 0,
+          replyCountWeight3: 0,
+          replyCountWeight4: 0,
+        },
+        actor: "tester",
+      }),
+      /reply count weights/i,
+    );
+    assert.deepEqual(
+      [
+        cfg.replyCountWeight1,
+        cfg.replyCountWeight2,
+        cfg.replyCountWeight3,
+        cfg.replyCountWeight4,
+      ],
+      [50, 30, 15, 5],
+    );
+    assert.equal(db.store.size, 0);
+    assert.equal(applied.length, 0);
+  });
+
+  it("keeps the last good UI and worker config when stored weights are all zero", async () => {
+    db.store.set("wa:settings:runtime", {
+      values: {
+        replyCountWeight1: 0,
+        replyCountWeight2: 0,
+        replyCountWeight3: 0,
+        replyCountWeight4: 0,
+      },
+      updatedAt: new Date().toISOString(),
+      updatedBy: "old-node",
+    });
+
+    assert.equal(await mgr.refresh(), false);
+    assert.deepEqual(
+      [
+        cfg.replyCountWeight1,
+        cfg.replyCountWeight2,
+        cfg.replyCountWeight3,
+        cfg.replyCountWeight4,
+      ],
+      [50, 30, 15, 5],
+    );
+    const shown = mgr
+      .view()
+      .items.filter((item) => item.key.startsWith("replyCountWeight"))
+      .map((item) => item.value);
+    assert.deepEqual(shown, [50, 30, 15, 5]);
+    assert.equal(applied.length, 0);
+  });
+
   it("drops the override when a value is set back to the env default", async () => {
     await mgr.patch({ patch: { chatflowMaxSteps: 64 }, actor: "t" });
     assert.equal(mgr.view().overriddenCount, 1);

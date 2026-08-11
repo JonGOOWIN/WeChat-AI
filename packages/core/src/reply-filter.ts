@@ -178,10 +178,13 @@ function parseToResult(
     expandLongBubbles: true,
   });
 
+  // A recognised JSON envelope is authoritative even when it is empty. Raw
+  // fallback is only safe for non-JSON text; otherwise an empty/filtered send
+  // plan can leak its wrapper to the user as a literal chat bubble.
   let parts =
     parsed.parts.length > 0
       ? parsed.parts
-      : raw.trim()
+      : !parsed.fromJson && raw.trim()
         ? [{ kind: "text" as const, text: raw.trim() }]
         : [];
 
@@ -195,7 +198,7 @@ function parseToResult(
     parts = dropDisallowedStickers(parts, opts.allowed);
   }
 
-  if (!parts.length && raw.trim()) {
+  if (!parts.length && raw.trim() && !parsed.fromJson) {
     const fallback = parseMultiBubbleReply(raw, {
       maxBubbles: opts.maxBubbles,
       maxChunkChars: opts.maxChunkChars,
@@ -301,8 +304,10 @@ export class ReplyFilter {
         completionTokens: usage.completionTokens,
       });
 
-      // Filter must return parseable multi-bubble JSON; otherwise use primary raw
-      if (!result.fromFilterJson || !result.parts.length || !result.displayText.trim()) {
+      // Only an unparseable filter response falls back to the primary output.
+      // A valid envelope that becomes empty after allowlist filtering is an
+      // authoritative empty send plan, not permission to re-inject raw JSON.
+      if (!result.fromFilterJson) {
         return parseToResult(rawText, {
           maxBubbles,
           maxChunkChars,

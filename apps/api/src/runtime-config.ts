@@ -1,5 +1,5 @@
 import { K, type Db } from "@wechat-ai/db";
-import type { AppConfig } from "./config.js";
+import { assertReplyCountWeights, type AppConfig } from "./config.js";
 import {
   coerceSetting,
   configToSettingValue,
@@ -204,6 +204,22 @@ export class RuntimeConfigManager {
       const spec = SETTING_SPEC_BY_KEY.get(k)!;
       const coerced = coerceSetting(spec, v);
       if (coerced !== null) next[k] = coerced;
+    }
+    try {
+      assertReplyCountWeights(
+        ([1, 2, 3, 4] as const).map((count) => {
+          const key = `replyCountWeight${count}` as RuntimeSettingKey;
+          return Number(
+            next[key] === undefined ? this.envDefaults[key] : next[key],
+          );
+        }),
+        "stored runtime reply count weights",
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.lastReadError = message;
+      this.log(`[settings] invalid stored config, keeping last known config: ${message}`);
+      return false;
     }
     this.overrides = next;
     this.updatedAt = doc?.updatedAt ?? "";
@@ -450,6 +466,15 @@ export class RuntimeConfigManager {
         changed.push(k);
       }
     }
+
+    const effectiveWeight = (key: RuntimeSettingKey): number =>
+      Number(values[key] === undefined ? this.envDefaults[key] : values[key]);
+    assertReplyCountWeights(
+      ([1, 2, 3, 4] as const).map((count) =>
+        effectiveWeight(`replyCountWeight${count}` as RuntimeSettingKey),
+      ),
+      "runtime reply count weights",
+    );
 
     const nextDoc: RuntimeSettingsDoc = {
       values,

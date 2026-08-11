@@ -35,7 +35,9 @@ import {
   parseFactsJson,
   parseProactiveSkip,
   type PromptAttachment,
+  type BatchPromptItem,
 } from "./prompt.js";
+import type { AdaptiveReplyPlan } from "./adaptive-reply-plan.js";
 import {
   parseMultiBubbleReply,
   type ReplyPart,
@@ -123,6 +125,9 @@ export interface InboundChatRequest {
    * can say it cannot see them instead of inventing contents.
    */
   attachments?: PromptAttachment[];
+  /** Ordered boundaries of an adaptive batch; omitted for legacy single turns. */
+  batchItems?: BatchPromptItem[];
+  replyPlan?: AdaptiveReplyPlan;
 }
 
 export interface ProactiveChatRequest {
@@ -175,6 +180,15 @@ const DEFAULTS: ChatServiceOptions = {
   visionCaptionMaxTokens: 300,
 };
 
+function renderBatchHistory(items: readonly BatchPromptItem[]): string {
+  return items
+    .map((item, index) => {
+      const content = describeAttachments(item.text, item.attachments);
+      return `[消息 ${index + 1}/${items.length} · ${item.id}]\n${content}`.trimEnd();
+    })
+    .join("\n\n");
+}
+
 export class ChatService {
   private opts: ChatServiceOptions;
   private replyFilter: ReplyFilter;
@@ -210,6 +224,30 @@ export class ChatService {
       httpAllowHosts: this.opts.chatflowHttpAllowHosts,
       timeZone: this.opts.timeToolTimeZone || "Asia/Shanghai",
     });
+  }
+
+  /** Cheap system-only gate so the worker can keep rejects outside batching. */
+  async preflightInbound(
+    req: Pick<InboundChatRequest, "botAccountId" | "peerId" | "text">,
+  ): Promise<InboundChatResult | null> {
+    const peer = await ensurePeer(this.db, req.botAccountId, req.peerId);
+    return this.inboundGate(peer, req.text);
+  }
+
+  private inboundGate(
+    peer: { approved: number },
+    text: string,
+  ): InboundChatResult | null {
+    if (!peer.approved && !this.opts.allowUnapproved) {
+      return { kind: "reject", text: this.opts.unapprovedReply };
+    }
+    if (/^\s*\/角色/.test(text)) {
+      return {
+        kind: "reply",
+        text: "角色切换仅支持机器人主人在后台分配，暂不支持用户自助 /角色 命令。",
+      };
+    }
+    return null;
   }
 
   /**
@@ -341,10 +379,12 @@ export class ChatService {
    * Second-pass filter (or legacy parse) → structured parts for WeChat send.
    * Records filter token usage when the filter LLM ran.
    */
-  private async finalizeReplyParts(params: {
+  /** Public deterministic seam shared by adaptive handling and contract tests. */
+  async finalizeReplyParts(params: {
     rawLlmText: string;
     stickers: StickerPromptEntry[];
     botAccountId: string;
+    adaptive?: boolean;
     ownerUserId?: string | null;
     ownerUsername?: string;
     botName?: string | null;
@@ -354,7 +394,10 @@ export class ChatService {
     displayText: string;
     bubblesFromJson: boolean;
   }> {
-    const maxBubbles = this.opts.maxReplyBubbles ?? 5;
+    const configuredMaxBubbles = this.opts.maxReplyBubbles ?? 5;
+    const maxBubbles = params.adaptive
+      ? Math.min(4, configuredMaxBubbles)
+      : configuredMaxBubbles;
     const maxChunkChars = this.opts.maxChunkChars ?? 72;
     const maxStickers = this.opts.maxStickersPerReply ?? 2;
     const raw = (params.rawLlmText ?? "").trim();
@@ -377,12 +420,30 @@ export class ChatService {
           botName: params.botName ?? undefined,
         });
       }
-      const parts =
-        filtered.parts.length > 0
-          ? filtered.parts
-          : raw
-            ? [{ kind: "text" as const, text: raw }]
-            : [];
+      if (
+        params.adaptive &&
+        filtered.parts.length === 1 &&
+        filtered.parts[0]?.kind === "text"
+      ) {
+        const envelope = parseMultiBubbleReply(filtered.parts[0].text, {
+          maxBubbles,
+          maxChunkChars,
+          maxStickers,
+          fallbackSplit: true,
+          expandLongBubbles: true,
+        });
+        if (envelope.fromJson && envelope.parts.length === 0) {
+          return {
+            parts: [],
+            bubbles: [],
+            displayText: "",
+            bubblesFromJson: true,
+          };
+        }
+      }
+      const rawFallback =
+        !params.adaptive && raw ? [{ kind: "text" as const, text: raw }] : [];
+      const parts = filtered.parts.length > 0 ? filtered.parts : rawFallback;
       const bubbles =
         filtered.bubbles.length > 0
           ? filtered.bubbles
@@ -390,7 +451,7 @@ export class ChatService {
               p.kind === "text" ? p.text : `[表情:${p.slug}]`,
             );
       const displayText =
-        filtered.displayText || bubbles.join("\n") || raw;
+        filtered.displayText || bubbles.join("\n") || (params.adaptive ? "" : raw);
       return {
         parts,
         bubbles,
@@ -423,7 +484,7 @@ export class ChatService {
         ? parts.map((p) =>
             p.kind === "text" ? p.text : `[表情:${p.slug}]`,
           )
-        : raw
+        : !params.adaptive && raw
           ? [raw]
           : [];
     const displayText =
@@ -535,16 +596,8 @@ export class ChatService {
     // leave throttled / P2P peers with a stale token (breaking proactive and
     // P2P delivery), so the worker keeps ownership of this write.
 
-    if (!peer.approved && !this.opts.allowUnapproved) {
-      return { kind: "reject", text: this.opts.unapprovedReply };
-    }
-
-    if (/^\s*\/角色/.test(req.text)) {
-      return {
-        kind: "reply",
-        text: "角色切换仅支持机器人主人在后台分配，暂不支持用户自助 /角色 命令。",
-      };
-    }
+    const gate = this.inboundGate(peer, req.text);
+    if (gate) return gate;
 
     const persona = await resolvePersonaForPeer(
       this.db,
@@ -580,23 +633,45 @@ export class ChatService {
     // Caption mode turns the image into text here, before anything else reads
     // the attachments — so history, memory retrieval and the roleplay prompt all
     // see the description rather than an opaque placeholder.
-    let attachments = req.attachments ?? [];
+    let batchItems = req.batchItems?.map((item) => ({
+      ...item,
+      attachments: [...item.attachments],
+    }));
+    let attachments = batchItems?.length
+      ? batchItems.flatMap((item) => item.attachments)
+      : req.attachments ?? [];
     if (
       this.opts.visionMode !== "direct" &&
       attachments.some((a) => a.dataUri)
     ) {
-      attachments = await this.captionAttachments({
-        attachments,
-        userText: req.text,
-        botAccountId: req.botAccountId,
-        ownerUserId: bot?.owner_user_id,
-        ownerUsername: owner?.username,
-        botName: bot?.display_name,
-      });
+      if (batchItems?.length) {
+        for (const item of batchItems) {
+          item.attachments = await this.captionAttachments({
+            attachments: item.attachments,
+            userText: item.text,
+            botAccountId: req.botAccountId,
+            ownerUserId: bot?.owner_user_id,
+            ownerUsername: owner?.username,
+            botName: bot?.display_name,
+          });
+        }
+        attachments = batchItems.flatMap((item) => item.attachments);
+      } else {
+        attachments = await this.captionAttachments({
+          attachments,
+          userText: req.text,
+          botAccountId: req.botAccountId,
+          ownerUserId: bot?.owner_user_id,
+          ownerUsername: owner?.username,
+          botName: bot?.display_name,
+        });
+      }
     }
     // The media bytes are never persisted, so this described text is the only
     // trace a later turn can see.
-    const historyText = describeAttachments(req.text, attachments);
+    const historyText = batchItems?.length
+      ? renderBatchHistory(batchItems)
+      : describeAttachments(req.text, attachments);
 
     const [userMsg, , stickers] = await Promise.all([
       insertMessage(this.db, {
@@ -681,6 +756,14 @@ export class ChatService {
         stickers,
         timeToolEnabled: this.opts.timeToolEnabled !== false,
         attachments,
+        batchItems,
+        adaptiveReplyPlan:
+          req.replyPlan?.decision === "reply"
+            ? {
+                targetPartCount: req.replyPlan.targetPartCount,
+                coveredItemIds: req.replyPlan.coveredItemIds,
+              }
+            : undefined,
       });
 
       const { client: chatClient, callOpts } = await this.resolveChatClient({
@@ -703,11 +786,18 @@ export class ChatService {
       rawLlmText,
       stickers,
       botAccountId: req.botAccountId,
+      adaptive: Boolean(req.replyPlan),
       ownerUserId: bot?.owner_user_id,
       ownerUsername: owner?.username,
       botName: bot?.display_name,
     });
     const { parts, bubbles, displayText, bubblesFromJson } = finalized;
+
+    // Adaptive plans are a stricter public contract than legacy single turns.
+    // Fail closed before storing or sending an assistant turn.
+    if (req.replyPlan && (parts.length === 0 || !displayText.trim())) {
+      return { kind: "skip", skipReason: "invalid_reply_plan" };
+    }
 
     // Everything left is independent bookkeeping — one wave, not four.
     // This runs between "model produced text" and "first bubble sent", so each

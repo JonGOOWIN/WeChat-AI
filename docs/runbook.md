@@ -4,7 +4,7 @@
 
 ### 1.1 依赖
 
-- Node.js 20.9+（lint 工具链最低版本）
+- Node.js 22.13+（pnpm 11.15.0 与 lint 工具链最低版本）
 - pnpm 11.15.0（由根目录 `packageManager` 锁定）
 - **Upstash Redis**（`rediss://...`）
 - **LINUX DO OAuth** 应用
@@ -69,7 +69,7 @@ npm run build
 
 `npm run lint` 会扫描所有 workspace TypeScript 源码与测试、Cloudflare Worker TypeScript 源码及仓库 JavaScript 脚本。它不扫描依赖、`dist` / `build` / `coverage`、Wrangler 产物、`apps/api/public` 静态浏览器页面、控制台用单文件 bundle `cloudflare-worker/worker.js`、Python 工具或 lint 契约的故意错误 fixture。
 
-GitHub Actions 在每个 pull request 与 `master` push 上分别显示 `lint`、`test`、`typecheck`、`build` 四个 check，命令与上表完全相同。`test` 使用工作流内的临时 Redis；工作流不会读取生产 Redis、LLM 或 OAuth secret。未配置 repository variable `RUNS_ON` 时使用 `ubuntu-latest`；要使用现有 self-hosted runner 时，将 `RUNS_ON` 设为该 runner 的 label。合并前须确认四个 check 的 `head_sha` 都等于 PR 当前 head，且 conclusion 全部为 `success`。
+GitHub Actions 在每个 pull request 与 `master` push 上分别显示 `lint`、`test`、`typecheck`、`build` 四个 check，命令与上表完全相同。CI 使用与 `package.json` 一致的 Node.js 22.13 最低版本（锁定的 pnpm 11.15.0 需要此版本）。`test` 使用工作流内的临时 Redis；工作流不会读取生产 Redis、LLM 或 OAuth secret。未配置 repository variable `RUNS_ON` 时使用 `ubuntu-latest`；要使用现有 self-hosted runner 时，将 `RUNS_ON` 设为该 runner 的 label。合并前须确认四个 check 的 `head_sha` 都等于 PR 当前 head，且 conclusion 全部为 `success`。
 
 | 页面 | URL |
 |------|-----|

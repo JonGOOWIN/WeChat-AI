@@ -7,16 +7,16 @@ import { ESLint } from "eslint";
 
 const fixture = "scripts/fixtures/lint-known-bad.js";
 
-test("package and developer docs require the lint toolchain Node minimum", async () => {
+test("package and developer docs require the pnpm toolchain Node minimum", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
   const [readme, runbook] = await Promise.all([
     readFile("README.md", "utf8"),
     readFile("docs/runbook.md", "utf8"),
   ]);
 
-  assert.equal(packageJson.engines?.node, ">=20.9.0");
-  assert.match(readme, /Node\.js 20\.9\+/);
-  assert.match(runbook, /Node\.js 20\.9\+/);
+  assert.equal(packageJson.engines?.node, ">=22.13.0");
+  assert.match(readme, /Node\.js 22\.13\+/);
+  assert.match(runbook, /Node\.js 22\.13\+/);
 });
 
 test("lint rejects the tracked known-bad fixture", () => {

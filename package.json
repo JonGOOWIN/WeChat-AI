@@ -20,7 +20,7 @@
     "docker:up": "node scripts/docker-build.mjs --up"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=22.13.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

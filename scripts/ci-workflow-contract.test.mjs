@@ -36,8 +36,9 @@ test("CI reports the repository quality gates for pull requests and master pushe
 test("CI jobs install the pinned toolchain and run one matching gate", async () => {
   const workflow = await loadWorkflow();
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+  const engineFloor = packageJson.engines.node.match(/^>=(\d+\.\d+\.\d+)$/)?.[1];
 
-  assert.equal(packageJson.engines.node, ">=20.9.0");
+  assert.equal(packageJson.engines.node, ">=22.13.0");
   assert.match(packageJson.packageManager, /^pnpm@11\.15\.0$/);
   for (const name of expectedJobs) {
     const job = workflow.jobs[name];
@@ -45,7 +46,7 @@ test("CI jobs install the pinned toolchain and run one matching gate", async () 
     assert.equal(stepsUsing(job, "pnpm/action-setup").length, 1);
     const setupNode = stepsUsing(job, "actions/setup-node");
     assert.equal(setupNode.length, 1);
-    assert.equal(setupNode[0].with["node-version"], "20.9.0");
+    assert.equal(setupNode[0].with["node-version"], engineFloor);
     assert.equal(setupNode[0].with.cache, "pnpm");
     assert.ok(job.steps.some((step) => step.run === "pnpm install --frozen-lockfile"));
     assert.ok(job.steps.some((step) => step.run === `npm run ${name}`));

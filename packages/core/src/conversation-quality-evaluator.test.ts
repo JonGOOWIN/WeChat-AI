@@ -40,6 +40,34 @@ describe("offline conversation quality evaluation", () => {
     assert.equal(report.emotionalContinuity, false);
     assert.equal(report.repeatedPhrasing, true);
   });
+
+  it("uses runtime question intent rules so URL queries are not follow-ups", () => {
+    const base = {
+      obligationTopicIds: [],
+      coveredTopicIds: [],
+      expectedEmotion: null,
+      replyEmotion: null,
+      recentAssistantTexts: [],
+    } as const;
+    assert.equal(evaluateConversationQualityFixture({ ...base, id: "url", replyText: "請看 https://example.com/s?wd=test" }).followUpPresent, false);
+    assert.equal(evaluateConversationQualityFixture({ ...base, id: "zh", replyText: "你現在方便嗎" }).followUpPresent, true);
+  });
+
+  it("classifies no visible reply as empty while one visible character stays short", () => {
+    const base = {
+      obligationTopicIds: [],
+      coveredTopicIds: [],
+      expectedEmotion: null,
+      replyEmotion: null,
+      recentAssistantTexts: [],
+    } as const;
+    for (const [id, replyText] of [["blank", ""], ["spaces", "  \n"], ["sticker", "[表情:smile]"]] as const) {
+      const report = evaluateConversationQualityFixture({ ...base, id, replyText });
+      assert.equal(report.visibleLength, 0);
+      assert.equal(report.visibleLengthBucket, "empty");
+    }
+    assert.equal(evaluateConversationQualityFixture({ ...base, id: "one", replyText: "好" }).visibleLengthBucket, "short");
+  });
 });
 
 describe("fixed-seed quality distribution", () => {

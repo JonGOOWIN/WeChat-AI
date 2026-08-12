@@ -1,7 +1,10 @@
 import {
+  countConversationQuestionIntents,
   hasRepeatedConversationPhrase,
   type ReplyLengthBucket,
 } from "./conversation-quality.js";
+
+export type EvaluatedReplyLengthBucket = ReplyLengthBucket | "empty";
 
 export interface ConversationQualityFixture {
   id: string;
@@ -18,7 +21,7 @@ export interface ConversationQualityEvaluation {
   replyObligationCoverage: number;
   followUpPresent: boolean;
   visibleLength: number;
-  visibleLengthBucket: ReplyLengthBucket;
+  visibleLengthBucket: EvaluatedReplyLengthBucket;
   emotionalContinuity: boolean;
   repeatedPhrasing: boolean;
 }
@@ -44,10 +47,16 @@ export function evaluateConversationQualityFixture(
     fixtureId: fixture.id,
     replyObligationCoverage:
       obligations.size === 0 ? 1 : covered.size / obligations.size,
-    followUpPresent: /[?？]/u.test(fixture.replyText),
+    followUpPresent: countConversationQuestionIntents(fixture.replyText) > 0,
     visibleLength,
     visibleLengthBucket:
-      visibleLength <= 20 ? "short" : visibleLength <= 60 ? "normal" : "long",
+      visibleLength === 0
+        ? "empty"
+        : visibleLength <= 20
+          ? "short"
+          : visibleLength <= 60
+            ? "normal"
+            : "long",
     emotionalContinuity:
       expectedEmotion === null || expectedEmotion === replyEmotion,
     repeatedPhrasing,

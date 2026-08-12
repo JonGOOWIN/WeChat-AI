@@ -70,7 +70,7 @@ export function inspectConversationQuality(params: {
   if (visibleLength > params.plan.lengthMaxChars) {
     violations.push("length");
   }
-  const questionCount = countQuestionIntents(params.visibleText);
+  const questionCount = countConversationQuestionIntents(params.visibleText);
   if ((!params.plan.followUp && questionCount > 0) || questionCount > 1) {
     violations.push("follow-up");
   }
@@ -233,7 +233,8 @@ function isProtectedReplyObligation(text: string, hasAttachments: boolean): bool
   );
 }
 
-function countQuestionIntents(value: string): number {
+/** Shared runtime/evaluator question-intent seam; URL query strings are ignored. */
+export function countConversationQuestionIntents(value: string): number {
   const withoutUrls = stripUrls(value);
   const punctuationCount = (withoutUrls.match(/[?？]/g) ?? []).length;
   return punctuationCount > 0

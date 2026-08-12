@@ -8,6 +8,7 @@ export {
 export {
   DEFAULT_CONVERSATION_QUALITY,
   buildConversationQualityRepairInstruction,
+  countConversationQuestionIntents,
   inspectConversationQuality,
   hasRepeatedConversationPhrase,
   planConversationQuality,
@@ -24,6 +25,7 @@ export {
   evaluateConversationQualityFixture,
   type ConversationQualityEvaluation,
   type ConversationQualityFixture,
+  type EvaluatedReplyLengthBucket,
 } from "./conversation-quality-evaluator.js";
 export {
   applyPromptTemplate,

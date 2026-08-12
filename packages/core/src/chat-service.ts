@@ -769,6 +769,10 @@ export class ChatService {
     let rawLlmText: string;
     let promptTokens = 0;
     let completionTokens = 0;
+    // Quality planning and token accounting are independent concerns. Prompt
+    // mode records each call inside callPromptLlm; Chatflow reports aggregate
+    // graph usage and must be recorded once after the graph completes.
+    let primaryUsageRecorded = false;
     let qualityPlan: ConversationQualityPlan | undefined;
     let qualityMessages: ReturnType<typeof buildChatMessages> | undefined;
     let qualityClient: LlmClient | undefined;
@@ -874,6 +878,7 @@ export class ChatService {
       qualityClient = chatClient;
       qualityCallOpts = callOpts;
       const usage = await callPromptLlm(chatClient, messages, callOpts);
+      primaryUsageRecorded = true;
       rawLlmText = usage.text;
       promptTokens = usage.promptTokens;
       completionTokens = usage.completionTokens;
@@ -950,7 +955,10 @@ export class ChatService {
     }
     const { parts, bubbles, displayText, bubblesFromJson } = finalized;
 
-    if (qualityPlan) {
+    // Only prompt mode owns a bounded one-shot repair seam. Chatflow receives
+    // the same generation constraint in every LLM node, but must not silently
+    // drop a completed graph answer because there is no safe single-call repair.
+    if (qualityPlan && qualityMessages && qualityClient && qualityCallOpts) {
       const remainingViolations = inspectConversationQuality({
         visibleText: displayText,
         plan: qualityPlan,
@@ -979,7 +987,7 @@ export class ChatService {
       if (req.replyPlan) {
         return { kind: "skip", skipReason: "invalid_reply_plan" };
       }
-      if (!qualityPlan) {
+      if (!primaryUsageRecorded) {
         await recordTokenUsage(this.db, {
           userId: bot?.owner_user_id,
           botId: req.botAccountId,
@@ -1003,7 +1011,7 @@ export class ChatService {
     // the next message on this peer reads history to build its prompt, so a
     // floating insertMessage would drop this turn out of context.
     await Promise.all([
-      qualityPlan
+      primaryUsageRecorded
         ? Promise.resolve()
         : recordTokenUsage(this.db, {
             userId: bot?.owner_user_id,

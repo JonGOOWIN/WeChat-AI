@@ -113,11 +113,14 @@ export class AdaptiveReplyBatcher {
     this.stopped = false;
   }
 
+  /** Close every open batch now while keeping the batcher available. */
+  flush(): void {
+    for (const [key, batch] of [...this.open]) this.close(key, batch);
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
-    for (const [key, batch] of [...this.open]) {
-      this.close(key, batch);
-    }
+    this.flush();
     await Promise.all([...this.deliveries]);
   }
 

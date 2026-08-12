@@ -25,6 +25,7 @@ export type RuntimeSettingKey =
   | "replyDelayFirstMinMs"
   | "replyDelayFirstMaxMs"
   | "replyDelayThinkExtraMs"
+  | "replyBatchEnabled"
   | "replyBatchSilenceMs"
   | "replyBatchMaxWaitMs"
   | "replySkipBiasPercent"
@@ -198,6 +199,10 @@ export interface SettingSpec {
   min?: number;
   max?: number;
   step?: number;
+  /** Optional UI-only divisor (milliseconds shown as seconds, for example). */
+  displayDivisor?: number;
+  /** Conversation-planning stage used by the generic Admin renderer. */
+  stage?: "batch" | "decide" | "reply";
   /**
    * Closed set of allowed values for a string setting. Anything else is
    * rejected outright — a free-form string that reaches a strict consumer
@@ -270,32 +275,48 @@ export const SETTING_SPECS: SettingSpec[] = [
     max: 100,
   },
   {
+    key: "replyBatchEnabled",
+    env: "REPLY_BATCH_ENABLED",
+    group: "chat",
+    label: "合并连续消息后再回复",
+    type: "bool",
+    stage: "batch",
+    hint: "开启后先把同一联系人短时间内的连续消息合成一批，再判断是否回复",
+  },
+  {
     key: "replyBatchSilenceMs",
     env: "REPLY_BATCH_SILENCE_MS",
     group: "chat",
-    label: "连续消息静默窗口(ms)",
+    label: "最后一条后静默等待(秒)",
     type: "int",
     min: 100,
     max: 120000,
+    displayDivisor: 1000,
+    stage: "batch",
+    hint: "有新消息会重新计时；静默等待不能超过最长等待",
   },
   {
     key: "replyBatchMaxWaitMs",
     env: "REPLY_BATCH_MAX_WAIT_MS",
     group: "chat",
-    label: "连续消息最长等待(ms)",
+    label: "整批最长等待(秒)",
     type: "int",
     min: 100,
     max: 120000,
+    displayDivisor: 1000,
+    stage: "batch",
+    hint: "从这一批第一条消息开始计时，避免连续输入让回复一直延后",
   },
   {
     key: "replySkipBiasPercent",
     env: "REPLY_SKIP_BIAS_PERCENT",
     group: "chat",
-    label: "无回复义务批次跳过校准(%)",
+    label: "语义跳过目标(%)",
     type: "float",
     min: 0,
     max: 100,
-    hint: "只用于长期校准；直接问题、请求、决策和重要情绪不会按概率丢弃",
+    stage: "decide",
+    hint: "按语义判断低价值或未完整批次，不是随机漏回；直接问题、明确请求、重要决定和情绪不会被跳过",
   },
   ...([1, 2, 3, 4] as const).map(
     (count): SettingSpec => ({
@@ -305,8 +326,9 @@ export const SETTING_SPECS: SettingSpec[] = [
       label: `${count} 条回复权重`,
       type: "float",
       min: 0,
-      max: 10000,
-      hint: "相对权重；语境优先，不会为凑条数机械拆句",
+      max: 100,
+      stage: "reply",
+      hint: "只在已经决定回复后分配条数；四项合计必须为 100，语境优先且不会机械拆句",
     }),
   ),
   {
@@ -317,7 +339,8 @@ export const SETTING_SPECS: SettingSpec[] = [
     type: "float",
     min: 0,
     max: 100,
-    hint: "只控制已決定回覆批次中的話題覆蓋；直接問題、請求、決定與情緒表達不會被省略",
+    stage: "decide",
+    hint: "指已决定回复时的话题覆盖，不是整批不回复率；直接问题与重要主题受保护，未来可由人设、联系人设置覆盖全局值",
   },
   {
     key: "replyFollowUpPercent",
@@ -327,6 +350,8 @@ export const SETTING_SPECS: SettingSpec[] = [
     type: "float",
     min: 0,
     max: 100,
+    stage: "decide",
+    hint: "在适合的语境中自然追问；未来可由人设、联系人设置覆盖全局值",
   },
   ...(["Short", "Normal", "Long"] as const).map(
     (bucket): SettingSpec => ({
@@ -336,7 +361,9 @@ export const SETTING_SPECS: SettingSpec[] = [
       label: `${bucket === "Short" ? "短" : bucket === "Normal" ? "普通" : "長"}回答權重`,
       type: "float",
       min: 0,
-      max: 10000,
+      max: 100,
+      stage: "reply",
+      hint: "三项合计必须为 100；按整份可见回复长度规划，未来可由人设、联系人设置覆盖",
     }),
   ),
   {
@@ -347,6 +374,8 @@ export const SETTING_SPECS: SettingSpec[] = [
     type: "int",
     min: 0,
     max: 20,
+    stage: "reply",
+    hint: "一次聚合入站批次加对应回复计划算一轮",
   },
   {
     key: "repetitionWindowAssistantTurns",
@@ -356,7 +385,8 @@ export const SETTING_SPECS: SettingSpec[] = [
     type: "int",
     min: 0,
     max: 50,
-    hint: "違規初稿在送出前最多重寫一次；若同時開啟二次 AI 排版，最壞為主生成、主排版、重寫、重寫排版共 4 次 LLM 呼叫",
+    stage: "reply",
+    hint: "检查最近 assistant 回复避免套话；初稿加重写最坏 2 次、开启二次 AI 排版时最坏 4 次 LLM 调用，会增加成本与延迟",
   },
   {
     key: "replyDelayMsPerChar",

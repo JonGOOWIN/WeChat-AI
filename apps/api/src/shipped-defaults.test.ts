@@ -126,6 +126,7 @@ describe("shipped defaults: other optional features stay off", () => {
 describe("shipped defaults: adaptive reply batching follows RULE-001", () => {
   it("uses the confirmed timing and calibration defaults", () => {
     const cfg = bare();
+    assert.equal(cfg.replyBatchEnabled, true);
     assert.equal(cfg.replyBatchSilenceMs, 10_000);
     assert.equal(cfg.replyBatchMaxWaitMs, 20_000);
     assert.equal(cfg.replySkipBiasPercent, 10);
@@ -142,11 +143,13 @@ describe("shipped defaults: adaptive reply batching follows RULE-001", () => {
 
   it("accepts environment overrides without coupling the four weights", () => {
     const cfg = loadConfig({
+      REPLY_BATCH_ENABLED: "false",
       REPLY_BATCH_SILENCE_MS: "2500",
       REPLY_BATCH_MAX_WAIT_MS: "8000",
       REPLY_SKIP_BIAS_PERCENT: "25",
       REPLY_COUNT_WEIGHTS: "5,15,30,50",
     } as NodeJS.ProcessEnv);
+    assert.equal(cfg.replyBatchEnabled, false);
     assert.equal(cfg.replyBatchSilenceMs, 2_500);
     assert.equal(cfg.replyBatchMaxWaitMs, 8_000);
     assert.equal(cfg.replySkipBiasPercent, 25);
@@ -164,6 +167,11 @@ describe("shipped defaults: adaptive reply batching follows RULE-001", () => {
   it("rejects explicitly invalid or all-zero reply-count env weights", () => {
     assert.throws(
       () =>
+        loadConfig({ REPLY_COUNT_WEIGHTS: "50,30,15,6" } as NodeJS.ProcessEnv),
+      /exactly 100/i,
+    );
+    assert.throws(
+      () =>
         loadConfig({ REPLY_COUNT_WEIGHTS: "0,0,0,0" } as NodeJS.ProcessEnv),
       /reply count weights/i,
     );
@@ -178,6 +186,17 @@ describe("shipped defaults: adaptive reply batching follows RULE-001", () => {
       () =>
         loadConfig({ REPLY_COUNT_WEIGHTS: "50,,15,5" } as NodeJS.ProcessEnv),
       /REPLY_COUNT_WEIGHTS/,
+    );
+  });
+
+  it("rejects a quiet window longer than the hard wait", () => {
+    assert.throws(
+      () =>
+        loadConfig({
+          REPLY_BATCH_SILENCE_MS: "21000",
+          REPLY_BATCH_MAX_WAIT_MS: "20000",
+        } as NodeJS.ProcessEnv),
+      /silence.*maximum/i,
     );
   });
 });

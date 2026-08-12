@@ -125,6 +125,8 @@ Auth: **Cookie 会话**（OAuth 登录后 `wa_session`），`credentials: includ
 | POST | `/api/v1/admin/settings/runtime/reset` | **仅超管** 删除全部覆盖，回到 `.env` |
 
 > 运行时配置详见 [`docs/runtime-settings.md`](./runtime-settings.md)：`.env` 是默认值，Redis 存覆盖，各节点 5 秒内同步。密钥字段 GET 只返回掩码；PATCH 传空 = 不改，传 `-` = 清空。
+>
+> 「对话与回复」按批次、判断、回复三段显示。连续消息静默／最长等待用秒填写；1–4 条回复与短／普通／长回答都是百分比分布，各组必须合计 100。直接问题、明确请求、重要决定与情绪受保护，不会按跳过比例盲目丢弃；覆盖率指已决定回复后的话题覆盖。未来人设与联系人值可覆盖全局值。初稿重写最坏 2 次 LLM 调用，若同时开启二次 AI 排版则最坏 4 次。
 | GET | `/api/v1/admin/bots` | 全部机器人（owner、worker、hasToken、peer 计数；前端分页，后端批量读） |
 | GET | `/api/v1/admin/bots/:botId` | 机器人详情 + peers |
 | PATCH | `/api/v1/admin/bots/:botId` | 改名 / `{ status: active\|inactive }` 启停 |

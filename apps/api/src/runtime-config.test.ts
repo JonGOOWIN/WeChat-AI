@@ -217,6 +217,38 @@ describe("RuntimeConfigManager", () => {
     await mgr.init();
   });
 
+  it("exposes, hot-applies and resets the adaptive batching switch", async () => {
+    const initial = mgr.view().items.find(
+      (item) => item.key === "replyBatchEnabled",
+    );
+    assert.equal(initial?.value, true);
+    assert.equal(initial?.envDefault, true);
+    assert.equal(initial?.group, "chat");
+
+    const saved = await mgr.patch({
+      patch: { replyBatchEnabled: false },
+      actor: "tester",
+    });
+    assert.equal(cfg.replyBatchEnabled, false);
+    assert.equal(
+      saved.view.items.find((item) => item.key === "replyBatchEnabled")
+        ?.overridden,
+      true,
+    );
+    assert.ok(applied.at(-1)?.has("replyBatchEnabled"));
+
+    const reset = await mgr.patch({
+      reset: ["replyBatchEnabled"],
+      actor: "tester",
+    });
+    assert.equal(cfg.replyBatchEnabled, true);
+    assert.equal(
+      reset.view.items.find((item) => item.key === "replyBatchEnabled")
+        ?.overridden,
+      false,
+    );
+  });
+
   it("starts from env with no overrides", () => {
     const v = mgr.view();
     assert.equal(v.overriddenCount, 0);
@@ -288,6 +320,52 @@ describe("RuntimeConfigManager", () => {
       [60, 30, 10],
     );
     assert.equal(db.store.size, 0);
+    assert.equal(applied.length, 0);
+  });
+
+  it("rejects unsafe conversation tuning as one unchanged public update", async () => {
+    const invalidPatches: Array<Record<string, unknown>> = [
+      { replyBatchSilenceMs: 21_000, replyBatchMaxWaitMs: 20_000 },
+      { replyBatchSilenceMs: -1 },
+      { replySkipBiasPercent: Number.NaN },
+      {
+        replyCountWeight1: 50,
+        replyCountWeight2: 30,
+        replyCountWeight3: 15,
+        replyCountWeight4: 6,
+      },
+      {
+        replyLengthWeightShort: 60,
+        replyLengthWeightNormal: 30,
+        replyLengthWeightLong: 11,
+      },
+    ];
+
+    for (const patch of invalidPatches) {
+      await assert.rejects(
+        mgr.patch({ patch, actor: "tester" }),
+        /invalid|must|between|total|等待|静默|权重/i,
+      );
+      assert.equal(db.store.size, 0);
+      assert.equal(applied.length, 0);
+      assert.equal(mgr.view().overriddenCount, 0);
+    }
+  });
+
+  it("rejects an unsafe peer document without changing last-known-good state", async () => {
+    const before = structuredClone(mgr.view());
+    db.store.set("wa:settings:runtime", {
+      values: {
+        replyLengthWeightShort: 60,
+        replyLengthWeightNormal: 30,
+        replyLengthWeightLong: 9,
+      },
+      updatedAt: "bad-peer-update",
+      updatedBy: "peer-node",
+    });
+
+    assert.equal(await mgr.refresh(), false);
+    assert.deepEqual(mgr.view(), before);
     assert.equal(applied.length, 0);
   });
 
@@ -474,6 +552,24 @@ describe("RuntimeConfigManager", () => {
         `group ${g.id} would render empty`,
       );
     }
+  });
+
+  it("describes conversation controls in user-facing stages and seconds", () => {
+    const items = new Map(mgr.view().items.map((item) => [item.key, item]));
+    assert.deepEqual(
+      [
+        items.get("replyBatchEnabled")?.stage,
+        items.get("replySkipBiasPercent")?.stage,
+        items.get("replyLengthWeightLong")?.stage,
+      ],
+      ["batch", "decide", "reply"],
+    );
+    assert.equal(items.get("replyBatchSilenceMs")?.displayDivisor, 1000);
+    assert.match(items.get("replySkipBiasPercent")?.hint ?? "", /语义/);
+    assert.match(items.get("replyCountWeight2")?.hint ?? "", /决定回复/);
+    assert.match(items.get("replyCoveragePercent")?.hint ?? "", /话题覆盖/);
+    assert.match(items.get("replyCoveragePercent")?.hint ?? "", /人设.*联系人/);
+    assert.match(items.get("repetitionWindowAssistantTurns")?.hint ?? "", /2.*4.*LLM/);
   });
 
   it("rejects a log level outside the allowed set", async () => {

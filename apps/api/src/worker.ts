@@ -176,6 +176,7 @@ export interface WorkerOptions {
   /** multi-bubble human-like reply */
   splitReply?: boolean;
   /** RULE-001 ordinary conversation batching. */
+  replyBatchEnabled?: boolean;
   replyBatchSilenceMs?: number;
   replyBatchMaxWaitMs?: number;
   replySkipBiasPercent?: number;
@@ -435,6 +436,7 @@ export class BotWorkerManager {
     inboundMediaMaxBytes?: number;
     voiceTranscriptEnabled?: boolean;
     splitReply?: boolean;
+    replyBatchEnabled?: boolean;
     replyBatchSilenceMs?: number;
     replyBatchMaxWaitMs?: number;
     replySkipBiasPercent?: number;
@@ -483,6 +485,10 @@ export class BotWorkerManager {
       this.opts.voiceTranscriptEnabled = patch.voiceTranscriptEnabled;
     }
     if (patch.splitReply !== undefined) this.opts.splitReply = patch.splitReply;
+    if (patch.replyBatchEnabled !== undefined) {
+      if (patch.replyBatchEnabled === false) this.adaptiveBatcher.flush();
+      this.opts.replyBatchEnabled = patch.replyBatchEnabled;
+    }
     if (
       patch.replyBatchSilenceMs !== undefined ||
       patch.replyBatchMaxWaitMs !== undefined
@@ -2160,7 +2166,7 @@ export class BotWorkerManager {
       );
     }
 
-    this.adaptiveBatcher.add({
+    const batchItem = {
       id: job.id,
       botId,
       peerId,
@@ -2168,7 +2174,23 @@ export class BotWorkerManager {
       text: job.text,
       attachments: [],
       payload: job,
-    });
+    };
+    if (this.opts.replyBatchEnabled === false) {
+      const receivedAtMs = Number.isFinite(msg.create_time_ms)
+        ? Number(msg.create_time_ms)
+        : 0;
+      this.enqueueClosedBatch({
+        id: `batch_${job.id}`,
+        botId,
+        peerId,
+        contextToken,
+        openedAtMs: receivedAtMs,
+        closedAtMs: receivedAtMs,
+        items: [batchItem],
+      });
+    } else {
+      this.adaptiveBatcher.add(batchItem);
+    }
   }
 
   private enqueueClosedBatch(batch: AdaptiveReplyBatch): void {

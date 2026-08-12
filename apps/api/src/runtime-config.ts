@@ -39,6 +39,14 @@ export class RuntimeSettingsUnavailableError extends Error {
   }
 }
 
+/** An Admin PATCH violates a declared field or conversation invariant. */
+export class RuntimeSettingsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RuntimeSettingsValidationError";
+  }
+}
+
 /** Placeholder returned instead of secret values. */
 export const SECRET_MASK = "••••••••";
 /** Typing this into a secret field clears it. */
@@ -53,6 +61,8 @@ export interface SettingItemView {
   min?: number;
   max?: number;
   step?: number;
+  displayDivisor?: number;
+  stage?: SettingSpec["stage"];
   /** Closed set for string settings; rendered as a <select> */
   options?: readonly string[];
   restart: boolean;
@@ -88,6 +98,56 @@ export type ApplyRuntimeConfigFn = (
   changed: Set<RuntimeSettingKey>,
   cfg: AppConfig,
 ) => void;
+
+const STRICT_CONVERSATION_NUMBERS = new Set<RuntimeSettingKey>([
+  "replyBatchSilenceMs",
+  "replyBatchMaxWaitMs",
+  "replySkipBiasPercent",
+  "replyCountWeight1",
+  "replyCountWeight2",
+  "replyCountWeight3",
+  "replyCountWeight4",
+  "replyCoveragePercent",
+  "replyFollowUpPercent",
+  "replyLengthWeightShort",
+  "replyLengthWeightNormal",
+  "replyLengthWeightLong",
+  "emotionContinuityTurns",
+  "repetitionWindowAssistantTurns",
+]);
+
+function strictConversationNumberIsValid(spec: SettingSpec, raw: unknown): boolean {
+  if (!STRICT_CONVERSATION_NUMBERS.has(spec.key)) return true;
+  const value = typeof raw === "number" ? raw : Number(String(raw).trim());
+  return (
+    Number.isFinite(value) &&
+    (spec.min === undefined || value >= spec.min) &&
+    (spec.max === undefined || value <= spec.max)
+  );
+}
+
+function assertConversationTuning(
+  value: (key: RuntimeSettingKey) => number,
+  source: string,
+): void {
+  const quiet = value("replyBatchSilenceMs");
+  const maximum = value("replyBatchMaxWaitMs");
+  if (quiet > maximum) {
+    throw new Error(`${source}: 连续消息静默窗口不得大于最长等待`);
+  }
+  assertReplyCountWeights(
+    ([1, 2, 3, 4] as const).map((count) =>
+      value(`replyCountWeight${count}` as RuntimeSettingKey),
+    ),
+    `${source} reply count weights`,
+  );
+  assertReplyLengthWeights(
+    (["Short", "Normal", "Long"] as const).map((bucket) =>
+      value(`replyLengthWeight${bucket}` as RuntimeSettingKey),
+    ),
+    `${source} reply length weights`,
+  );
+}
 
 function maskIfSecret(spec: SettingSpec, v: SettingValue): SettingValue {
   if (spec.type !== "secret") return v;
@@ -205,6 +265,12 @@ export class RuntimeConfigManager {
     for (const [k, v] of Object.entries(doc?.values ?? {})) {
       if (!isRuntimeSettingKey(k)) continue;
       const spec = SETTING_SPEC_BY_KEY.get(k)!;
+      if (!strictConversationNumberIsValid(spec, v)) {
+        const message = `stored runtime setting ${k} is invalid`;
+        this.lastReadError = message;
+        this.log(`[settings] invalid stored config, keeping last known config: ${message}`);
+        return false;
+      }
       const coerced = coerceSetting(spec, v);
       if (coerced === null) {
         const message = `stored runtime setting ${k} is invalid`;
@@ -215,23 +281,9 @@ export class RuntimeConfigManager {
       next[k] = coerced;
     }
     try {
-      assertReplyCountWeights(
-        ([1, 2, 3, 4] as const).map((count) => {
-          const key = `replyCountWeight${count}` as RuntimeSettingKey;
-          return Number(
-            next[key] === undefined ? this.envDefaults[key] : next[key],
-          );
-        }),
-        "stored runtime reply count weights",
-      );
-      assertReplyLengthWeights(
-        (["Short", "Normal", "Long"] as const).map((bucket) => {
-          const key = `replyLengthWeight${bucket}` as RuntimeSettingKey;
-          return Number(
-            next[key] === undefined ? this.envDefaults[key] : next[key],
-          );
-        }),
-        "stored runtime reply length weights",
+      assertConversationTuning(
+        (key) => Number(next[key] === undefined ? this.envDefaults[key] : next[key]),
+        "stored runtime conversation settings",
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -356,6 +408,8 @@ export class RuntimeConfigManager {
       min: spec.min,
       max: spec.max,
       step: spec.step,
+      displayDivisor: spec.displayDivisor,
+      stage: spec.stage,
       options: spec.options,
       restart: spec.restart === true,
       hint: spec.hint,
@@ -496,6 +550,11 @@ export class RuntimeConfigManager {
         }
         continue;
       }
+      if (!strictConversationNumberIsValid(spec, rawValue)) {
+        throw new RuntimeSettingsValidationError(
+          `runtime setting ${k} is invalid or outside its allowed range`,
+        );
+      }
       const coerced = coerceSetting(spec, rawValue);
       if (coerced === null) continue;
       // Setting a key back to its env default drops the override entirely,
@@ -515,18 +574,13 @@ export class RuntimeConfigManager {
 
     const effectiveWeight = (key: RuntimeSettingKey): number =>
       Number(values[key] === undefined ? this.envDefaults[key] : values[key]);
-    assertReplyCountWeights(
-      ([1, 2, 3, 4] as const).map((count) =>
-        effectiveWeight(`replyCountWeight${count}` as RuntimeSettingKey),
-      ),
-      "runtime reply count weights",
-    );
-    assertReplyLengthWeights(
-      (["Short", "Normal", "Long"] as const).map((bucket) =>
-        effectiveWeight(`replyLengthWeight${bucket}` as RuntimeSettingKey),
-      ),
-      "runtime reply length weights",
-    );
+    try {
+      assertConversationTuning(effectiveWeight, "runtime conversation settings");
+    } catch (err) {
+      throw new RuntimeSettingsValidationError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
 
     const nextDoc: RuntimeSettingsDoc = {
       values,

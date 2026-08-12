@@ -207,7 +207,10 @@ import {
 } from "./cache-headers.js";
 import { qrSvg } from "./qrcode.js";
 import { RateLimiter } from "./rate-limit.js";
-import { RuntimeSettingsUnavailableError } from "./runtime-config.js";
+import {
+  RuntimeSettingsUnavailableError,
+  RuntimeSettingsValidationError,
+} from "./runtime-config.js";
 
 
 export interface RouteContext {
@@ -3703,6 +3706,9 @@ export async function registerRoutes(
       // other override fleet-wide. Ask the admin to retry instead.
       if (err instanceof RuntimeSettingsUnavailableError) {
         return reply.code(503).send({ error: err.message });
+      }
+      if (err instanceof RuntimeSettingsValidationError) {
+        return reply.code(400).send({ error: err.message });
       }
       throw err;
     }

@@ -250,6 +250,7 @@ async function main(): Promise<void> {
     replyConcurrency: cfg.replyConcurrency,
     inboxMaxLen: cfg.inboxMaxLen,
     splitReply: cfg.splitReply,
+    replyBatchEnabled: cfg.replyBatchEnabled,
     replyBatchSilenceMs: cfg.replyBatchSilenceMs,
     replyBatchMaxWaitMs: cfg.replyBatchMaxWaitMs,
     replySkipBiasPercent: cfg.replySkipBiasPercent,

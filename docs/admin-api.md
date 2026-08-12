@@ -57,9 +57,9 @@ Auth: **Cookie 会话**（OAuth 登录后 `wa_session`），`credentials: includ
 |--------|------|------|
 | GET | `/api/v1/square/personas?q=&page=&limit=&sort=heat\|use\|recent\|name` | 搜索公开人设（默认 sort=heat；字段含 useCount / assignCount / forkCount / heatScore / forkedFrom） |
 | GET | `/api/v1/square/personas/:id` | 详情（含 systemPrompt） |
-| POST | `/api/v1/square/personas` | 发布（public/private） |
+| POST | `/api/v1/square/personas` | 发布（public/private；可带 `conversationQuality` partial patch） |
 | POST | `/api/v1/square/personas/:id/fork` | Fork 为当前用户私有草稿（`PERSONA_FORK_ENABLED`，默认开） |
-| PUT | `/api/v1/square/personas/:id` | 作者更新 |
+| PUT | `/api/v1/square/personas/:id` | 作者更新；`conversationQuality` 省略欄位＝不變、欄位 `null`＝恢復繼承、具體值＝覆蓋 |
 | DELETE | `/api/v1/square/personas/:id` | 作者软删除 |
 | GET | `/api/v1/square/stickers?q=&page=&limit=&sort=use\|recent\|name` | 已审核公开表情包（默认 sort=use） |
 | GET | `/api/v1/square/stickers/:id` | 详情（`imageUrl` 对公开已审为 CDN 路径） |
@@ -126,7 +126,7 @@ Auth: **Cookie 会话**（OAuth 登录后 `wa_session`），`credentials: includ
 
 > 运行时配置详见 [`docs/runtime-settings.md`](./runtime-settings.md)：`.env` 是默认值，Redis 存覆盖，各节点 5 秒内同步。密钥字段 GET 只返回掩码；PATCH 传空 = 不改，传 `-` = 清空。
 >
-> 「对话与回复」按批次、判断、回复三段显示。连续消息静默／最长等待用秒填写；1–4 条回复与短／普通／长回答都是百分比分布，各组必须合计 100。直接问题、明确请求、重要决定与情绪受保护，不会按跳过比例盲目丢弃；覆盖率指已决定回复后的话题覆盖。未来人设与联系人值可覆盖全局值。初稿重写最坏 2 次 LLM 调用，若同时开启二次 AI 排版则最坏 4 次。
+> 「对话与回复」按批次、判断、回复三段显示。连续消息静默／最长等待用秒填写；1–4 条回复与短／普通／长回答都是百分比分布，各组必须合计 100。直接问题、明确请求、重要决定与情绪受保护，不会按跳过比例盲目丢弃；覆盖率指已决定回复后的话题覆盖。人设编辑器的「进阶对话风格」可逐欄覆盖全局值；未覆盖欄位继续继承，联系人覆盖尚未提供。初稿重写最坏 2 次 LLM 调用，若同时开启二次 AI 排版则最坏 4 次。
 | GET | `/api/v1/admin/bots` | 全部机器人（owner、worker、hasToken、peer 计数；前端分页，后端批量读） |
 | GET | `/api/v1/admin/bots/:botId` | 机器人详情 + peers |
 | PATCH | `/api/v1/admin/bots/:botId` | 改名 / `{ status: active\|inactive }` 启停 |
@@ -140,8 +140,8 @@ Auth: **Cookie 会话**（OAuth 登录后 `wa_session`），`credentials: includ
 | POST | `/api/v1/admin/broadcast/:id/cancel` | **仅超管** 取消 pending/running 任务 |
 | GET | `/api/v1/admin/personas?q=&includeDisabled=1` | 人设列表 |
 | GET | `/api/v1/admin/personas/:id` | 详情（含 prompt） |
-| POST | `/api/v1/admin/personas` | 创建官方人设（可带 tags / isDefault） |
-| PUT | `/api/v1/admin/personas/:id` | 更新元信息 / prompt |
+| POST | `/api/v1/admin/personas` | 创建官方人设（可带 tags / isDefault / `conversationQuality` partial patch） |
+| PUT | `/api/v1/admin/personas/:id` | 更新元信息 / prompt / 对话风格覆盖；欄位 `null` 清除覆盖 |
 | POST | `/api/v1/admin/personas/:id/publish` | 发布新版本 prompt |
 | POST | `/api/v1/admin/personas/:id/takedown` | 下架非官方人设 |
 | POST | `/api/v1/admin/personas/:id/restore` | 恢复已下架 |

@@ -619,7 +619,10 @@ export class ChatService {
     }
 
     const qualitySettings = resolveConversationQualitySettings(
-      this.opts.conversationQuality,
+      {
+        ...this.opts.conversationQuality,
+        ...(persona.mode === "chatflow" ? {} : persona.conversation_quality),
+      },
     );
     const qualityHistoryLimit = Math.min(
       this.opts.historySafetyCap ?? 100,

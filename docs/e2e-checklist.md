@@ -92,6 +92,9 @@
 - [ ] 人设开启联网搜索 + `WEB_SEARCH_ENABLED=true`：问时事类问题触发 `/v1/web-search`
 - [ ] 审计日志 / 应用日志中 **不含** upstream api_key 明文
 - [ ] Fork 他人人设：新人设 `llmProviderId` 为空（不继承作者密钥）
+- [ ] 用户人设编辑器「进阶对话风格」：逐项切换继承／覆盖，保存重载后状态一致；长度比例非 100 时显示错误
+- [ ] Admin 官方人设编辑器：同样可逐项继承／覆盖；清除覆盖后重载显示「继承全局」
+- [ ] Fork 他人人设：对话风格覆盖保持一致，同时 `llmProviderId` 仍为空
 
 ## J. Chatflow
 

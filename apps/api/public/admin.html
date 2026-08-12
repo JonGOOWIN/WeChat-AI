@@ -913,6 +913,15 @@
       margin-bottom: 8px;
     }
     .section-label.tight { margin-bottom: 6px; }
+    .quality-editor { border: 1px solid var(--separator); border-radius: var(--radius-sm); padding: 0 14px; background: var(--surface-2); }
+    .quality-editor summary { cursor: pointer; padding: 13px 0; font-weight: 650; }
+    .quality-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 2px 0 14px; }
+    .quality-control { min-width: 0; padding: 12px; border-radius: var(--radius-xs); background: var(--surface); }
+    .quality-control > .row { justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .quality-inherit { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+    .quality-length { grid-column: 1 / -1; }
+    .quality-length-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    @media (max-width: 700px) { .quality-grid { grid-template-columns: 1fr; } .quality-length { grid-column: auto; } }
     .preview-thumb {
       max-width: 120px;
       max-height: 120px;
@@ -4293,6 +4302,17 @@
               </div>
               <textarea id="pPrompt" placeholder="人设正文… 可用 {{bot_name}}"></textarea>
             </div>
+            <details class="quality-editor">
+              <summary>进阶对话风格</summary>
+              <p class="muted">每项可单独覆盖；勾选「继承全局」时跟随后台设置。长度比例作为一组保存，三项须合计 100。</p>
+              <div class="quality-grid">
+                <div class="quality-control"><div class="row"><span class="field-label">话题覆盖率 (%)</span><label class="quality-inherit"><input type="checkbox" id="pQCoverageInherit" checked />继承全局</label></div><input type="number" id="pQCoverage" min="0" max="100" step="1" disabled /></div>
+                <div class="quality-control"><div class="row"><span class="field-label">自然追问倾向 (%)</span><label class="quality-inherit"><input type="checkbox" id="pQFollowUpInherit" checked />继承全局</label></div><input type="number" id="pQFollowUp" min="0" max="100" step="1" disabled /></div>
+                <div class="quality-control quality-length" id="pQLength"><div class="row"><span class="field-label">短 / 普通 / 长回答比例 (%)</span><label class="quality-inherit"><input type="checkbox" id="pQLengthInherit" checked />继承全局</label></div><div class="quality-length-inputs"><input type="number" id="pQLengthShort" min="0" max="100" step="1" placeholder="短" disabled /><input type="number" id="pQLengthNormal" min="0" max="100" step="1" placeholder="普通" disabled /><input type="number" id="pQLengthLong" min="0" max="100" step="1" placeholder="长" disabled /></div></div>
+                <div class="quality-control"><div class="row"><span class="field-label">情绪延续轮数</span><label class="quality-inherit"><input type="checkbox" id="pQEmotionInherit" checked />继承全局</label></div><input type="number" id="pQEmotion" min="0" max="20" step="1" disabled /></div>
+                <div class="quality-control"><div class="row"><span class="field-label">重复检查轮数</span><label class="quality-inherit"><input type="checkbox" id="pQRepetitionInherit" checked />继承全局</label></div><input type="number" id="pQRepetition" min="0" max="50" step="1" disabled /></div>
+              </div>
+            </details>
             <label class="field-label row">
               <input type="checkbox" id="pDefault" />
               设为默认人设（新用户/未分配时使用）
@@ -7137,6 +7157,7 @@
         $("pDesc").value = p.description || "";
         if ($("pTags")) $("pTags").value = (p.tags || []).join(", ");
         $("pPrompt").value = p.systemPrompt || "";
+        setPersonaQualityControls("pQ", p.conversationQuality || {});
         if ($("pDefault")) $("pDefault").checked = Boolean(p.isDefault);
         $("personaFormTitle").textContent = "编辑人设";
         $("personaSubmit").textContent = "保存修改";
@@ -11910,6 +11931,61 @@
       const tail = Date.now().toString(36).slice(-4);
       return (base || "persona") + "-" + tail;
     }
+    function setPersonaQualityControls(prefix, quality) {
+      const patch = quality || {};
+      const scalars = [
+        ["Coverage", "coveragePercent"],
+        ["FollowUp", "followUpPercent"],
+        ["Emotion", "emotionContinuityTurns"],
+        ["Repetition", "repetitionWindowAssistantTurns"],
+      ];
+      scalars.forEach(([suffix, key]) => {
+        const inherit = $(prefix + suffix + "Inherit");
+        const input = $(prefix + suffix);
+        const isInherited = patch[key] == null;
+        inherit.checked = isInherited;
+        input.disabled = isInherited;
+        input.value = isInherited ? "" : String(patch[key]);
+      });
+      const lengthInherited = patch.lengthWeights == null;
+      $(prefix + "LengthInherit").checked = lengthInherited;
+      ["Short", "Normal", "Long"].forEach((bucket, index) => {
+        const input = $(prefix + "Length" + bucket);
+        input.disabled = lengthInherited;
+        input.value = lengthInherited ? "" : String(patch.lengthWeights[index]);
+      });
+    }
+    function readPersonaQualityControls(prefix) {
+      const inherited = (suffix) => $(prefix + suffix + "Inherit").checked;
+      const number = (suffix) => Number($(prefix + suffix).value);
+      return {
+        coveragePercent: inherited("Coverage") ? null : number("Coverage"),
+        followUpPercent: inherited("FollowUp") ? null : number("FollowUp"),
+        lengthWeights: inherited("Length") ? null : [
+          number("LengthShort"),
+          number("LengthNormal"),
+          number("LengthLong"),
+        ],
+        emotionContinuityTurns: inherited("Emotion") ? null : number("Emotion"),
+        repetitionWindowAssistantTurns: inherited("Repetition") ? null : number("Repetition"),
+      };
+    }
+    function validatePersonaQualityControls(quality) {
+      const bounded = (value, max) => value == null || (Number.isFinite(value) && value >= 0 && value <= max);
+      if (!bounded(quality.coveragePercent, 100) || !bounded(quality.followUpPercent, 100)) throw new Error("覆盖率与追问倾向须在 0～100 之间");
+      if (quality.lengthWeights && (quality.lengthWeights.some((value) => !bounded(value, 100)) || Math.abs(quality.lengthWeights.reduce((sum, value) => sum + value, 0) - 100) > 1e-9)) throw new Error("短、普通、长回答比例须合计 100");
+      if (quality.emotionContinuityTurns != null && (!Number.isInteger(quality.emotionContinuityTurns) || !bounded(quality.emotionContinuityTurns, 20))) throw new Error("情绪延续轮数须为 0～20 的整数");
+      if (quality.repetitionWindowAssistantTurns != null && (!Number.isInteger(quality.repetitionWindowAssistantTurns) || !bounded(quality.repetitionWindowAssistantTurns, 50))) throw new Error("重复检查轮数须为 0～50 的整数");
+    }
+    function wirePersonaQualityControls(prefix) {
+      ["Coverage", "FollowUp", "Length", "Emotion", "Repetition"].forEach((suffix) => {
+        $(prefix + suffix + "Inherit").addEventListener("change", () => {
+          const disabled = $(prefix + suffix + "Inherit").checked;
+          const targets = suffix === "Length" ? ["LengthShort", "LengthNormal", "LengthLong"] : [suffix];
+          targets.forEach((target) => { $(prefix + target).disabled = disabled; });
+        });
+      });
+    }
     function resetPersonaForm() {
       $("personaEditId").value = "";
       $("pSlug").value = "";
@@ -11920,6 +11996,7 @@
       if ($("pTags")) $("pTags").value = "";
       $("pPrompt").value = "";
       if ($("pDefault")) $("pDefault").checked = false;
+      setPersonaQualityControls("pQ", {});
       $("personaFormTitle").textContent = "创建 / 编辑官方人设";
       $("personaSubmit").textContent = "发布官方人设";
       $("personaCancelEdit").style.display = "none";
@@ -11944,6 +12021,7 @@
       resetPersonaForm();
       toast("已取消编辑");
     };
+    wirePersonaQualityControls("pQ");
 
     $("personaSubmit").onclick = () =>
       withBusy($("personaSubmit"), async () => {
@@ -11958,6 +12036,8 @@
           .split(/[,，]/)
           .map((t) => t.trim())
           .filter(Boolean);
+        const conversationQuality = readPersonaQualityControls("pQ");
+        validatePersonaQualityControls(conversationQuality);
         if (editId) {
           await api("/api/v1/admin/personas/" + editId, {
             method: "PUT",
@@ -11966,6 +12046,7 @@
               description: $("pDesc").value.trim(),
               systemPrompt,
               tags,
+              conversationQuality,
             },
           });
           if ($("pDefault")?.checked) {
@@ -11986,6 +12067,7 @@
               systemPrompt,
               isDefault: Boolean($("pDefault")?.checked),
               tags,
+              conversationQuality,
             },
           });
           toast("官方人设已创建");
@@ -12449,6 +12531,7 @@
       $("pDesc").value = p.description || "";
       if ($("pTags")) $("pTags").value = (p.tags || []).join(", ");
       $("pPrompt").value = p.systemPrompt || "";
+      setPersonaQualityControls("pQ", p.conversationQuality || {});
       if ($("pDefault")) $("pDefault").checked = false;
       $("personaFormTitle").textContent = "复制新建官方人设";
       $("personaSubmit").textContent = "发布官方人设";
@@ -12648,6 +12731,7 @@
             $("pDesc").value = p.description || "";
             if ($("pTags")) $("pTags").value = (p.tags || []).join(", ");
             $("pPrompt").value = p.systemPrompt || "";
+            setPersonaQualityControls("pQ", p.conversationQuality || {});
             if ($("pDefault")) $("pDefault").checked = Boolean(p.isDefault);
             $("personaFormTitle").textContent = "编辑人设";
             $("personaSubmit").textContent = "保存修改";

@@ -152,6 +152,7 @@ import {
   type BroadcastTarget,
   type Db,
   type Persona,
+  type PersonaConversationQualityPatch,
   type Sticker,
   type User,
   type ReleaseFileEntry,
@@ -254,6 +255,7 @@ function personaPublicDto(
     mode: p.mode === "chatflow" ? "chatflow" : "prompt",
     llmProviderId: p.llm_provider_id ?? null,
     webSearchEnabled: Boolean(p.web_search_enabled),
+    conversationQuality: p.conversation_quality ?? {},
     updatedAt: p.updated_at,
     ...extra,
   };
@@ -1778,6 +1780,7 @@ export async function registerRoutes(
       mode?: "prompt" | "chatflow";
       llmProviderId?: string | null;
       webSearchEnabled?: boolean;
+      conversationQuality?: PersonaConversationQualityPatch | null;
     };
   }>("/api/v1/square/personas", async (req, reply) => {
     const user = await requireUser(req, reply, ctx);
@@ -1805,6 +1808,7 @@ export async function registerRoutes(
         mode: body.mode === "chatflow" ? "chatflow" : "prompt",
         llmProviderId: body.llmProviderId ?? null,
         webSearchEnabled: Boolean(body.webSearchEnabled),
+        conversationQuality: body.conversationQuality,
       });
       await writeAudit(ctx.db, "persona_published_square", user.id, {
         id: persona.id,
@@ -1828,6 +1832,7 @@ export async function registerRoutes(
       mode?: "prompt" | "chatflow";
       llmProviderId?: string | null;
       webSearchEnabled?: boolean;
+      conversationQuality?: PersonaConversationQualityPatch | null;
     };
   }>("/api/v1/square/personas/:id", async (req, reply) => {
     const user = await requireUser(req, reply, ctx);
@@ -1854,6 +1859,7 @@ export async function registerRoutes(
         mode: body.mode,
         llmProviderId: body.llmProviderId,
         webSearchEnabled: body.webSearchEnabled,
+        conversationQuality: body.conversationQuality,
       });
       return { persona: personaPublicDto(persona) };
     } catch (err) {
@@ -4384,6 +4390,7 @@ export async function registerRoutes(
       tags?: string[];
       visibility?: "public" | "private";
       systemPrompt?: string;
+      conversationQuality?: PersonaConversationQualityPatch | null;
     };
   }>("/api/v1/admin/personas/:id", async (req, reply) => {
     const admin = await requireAdmin(req, reply, ctx);
@@ -4445,6 +4452,7 @@ export async function registerRoutes(
       isDefault?: boolean;
       contentPolicy?: string;
       tags?: string[];
+      conversationQuality?: PersonaConversationQualityPatch | null;
     };
   }>("/api/v1/admin/personas", async (req, reply) => {
     const admin = await requireAdmin(req, reply, ctx);
@@ -4456,19 +4464,25 @@ export async function registerRoutes(
     if (await getPersonaBySlug(ctx.db, body.slug)) {
       return reply.code(409).send({ error: "slug exists" });
     }
-    const persona = await createPersona(ctx.db, {
-      slug: body.slug,
-      displayName: body.displayName,
-      description: body.description,
-      systemPrompt: body.systemPrompt,
-      isDefault: body.isDefault,
-      contentPolicy: body.contentPolicy ?? "standard",
-      ownerUserId: "system",
-      visibility: "public",
-      tags: Array.isArray(body.tags) ? body.tags : undefined,
-    });
-    await writeAudit(ctx.db, "persona_created", admin.id, { id: persona.id });
-    return { persona };
+    try {
+      const persona = await createPersona(ctx.db, {
+        slug: body.slug,
+        displayName: body.displayName,
+        description: body.description,
+        systemPrompt: body.systemPrompt,
+        isDefault: body.isDefault,
+        contentPolicy: body.contentPolicy ?? "standard",
+        ownerUserId: "system",
+        visibility: "public",
+        tags: Array.isArray(body.tags) ? body.tags : undefined,
+        conversationQuality: body.conversationQuality,
+      });
+      await writeAudit(ctx.db, "persona_created", admin.id, { id: persona.id });
+      return { persona };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.post<{

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  countConversationQuestionIntents,
   inspectConversationQuality,
   planConversationQuality,
   resolveConversationQualitySettings,
@@ -65,6 +66,21 @@ describe("conversation question intent", () => {
         expectedFollowUpViolation,
         visibleText,
       );
+    }
+  });
+
+  it("counts question intent per visible bubble instead of only at the end of the whole reply", () => {
+    const cases = [
+      ["你現在方便嗎\n我先去忙", 1],
+      ["你現在方便嗎\n[表情:smile]", 1],
+      ["先忙完再說\n我晚點回來", 0],
+      ["請看 https://example.com/s?wd=test\n我先去忙", 0],
+      ["真的?\n確定？", 2],
+      ["你現在方便嗎", 1],
+    ] as const;
+
+    for (const [text, expected] of cases) {
+      assert.equal(countConversationQuestionIntents(text), expected, text);
     }
   });
 });

@@ -235,13 +235,20 @@ function isProtectedReplyObligation(text: string, hasAttachments: boolean): bool
 
 /** Shared runtime/evaluator question-intent seam; URL query strings are ignored. */
 export function countConversationQuestionIntents(value: string): number {
-  const withoutUrls = stripUrls(value);
-  const punctuationCount = (withoutUrls.match(/[?？]/g) ?? []).length;
-  return punctuationCount > 0
-    ? punctuationCount
-    : containsQuestionIntent(withoutUrls)
-      ? 1
-      : 0;
+  const visible = value.replace(/\[表情:[^\]]+\]/gu, "");
+  return visible
+    .split(/\r?\n/u)
+    .map((bubble) => stripUrls(bubble).trim())
+    .filter(Boolean)
+    .reduce((count, bubble) => {
+      const punctuationCount = (bubble.match(/[?？]/g) ?? []).length;
+      return count +
+        (punctuationCount > 0
+          ? punctuationCount
+          : containsQuestionIntent(bubble)
+            ? 1
+            : 0);
+    }, 0);
 }
 
 function containsQuestionIntent(value: string): boolean {

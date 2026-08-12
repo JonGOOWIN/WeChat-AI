@@ -51,6 +51,8 @@ describe("offline conversation quality evaluation", () => {
     } as const;
     assert.equal(evaluateConversationQualityFixture({ ...base, id: "url", replyText: "請看 https://example.com/s?wd=test" }).followUpPresent, false);
     assert.equal(evaluateConversationQualityFixture({ ...base, id: "zh", replyText: "你現在方便嗎" }).followUpPresent, true);
+    assert.equal(evaluateConversationQualityFixture({ ...base, id: "multi", replyText: "你現在方便嗎\n我先去忙" }).followUpPresent, true);
+    assert.equal(evaluateConversationQualityFixture({ ...base, id: "sticker", replyText: "你現在方便嗎\n[表情:smile]" }).followUpPresent, true);
   });
 
   it("classifies no visible reply as empty while one visible character stays short", () => {

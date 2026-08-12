@@ -207,7 +207,13 @@ export class RuntimeConfigManager {
       if (!isRuntimeSettingKey(k)) continue;
       const spec = SETTING_SPEC_BY_KEY.get(k)!;
       const coerced = coerceSetting(spec, v);
-      if (coerced !== null) next[k] = coerced;
+      if (coerced === null) {
+        const message = `stored runtime setting ${k} is invalid`;
+        this.lastReadError = message;
+        this.log(`[settings] invalid stored config, keeping last known config: ${message}`);
+        return false;
+      }
+      next[k] = coerced;
     }
     try {
       assertReplyCountWeights(

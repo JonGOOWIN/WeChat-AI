@@ -53,6 +53,7 @@ import {
   inspectConversationQuality,
   planConversationQuality,
   resolveConversationQualitySettings,
+  scoreConversationQualityViolations,
   type ConversationQualityPlan,
   type ConversationQualitySettings,
 } from "./conversation-quality.js";
@@ -433,7 +434,7 @@ export class ChatService {
         maxChunkChars,
         maxStickers,
       });
-      if (filtered.promptTokens > 0 || filtered.completionTokens > 0) {
+      if (filtered.requestCount > 0) {
         await recordTokenUsage(this.db, {
           userId: params.ownerUserId ?? undefined,
           botId: params.botAccountId,
@@ -648,6 +649,35 @@ export class ChatService {
     const owner = bot?.owner_user_id
       ? await getUser(this.db, bot.owner_user_id)
       : undefined;
+    const callPromptLlm = async (
+      client: LlmClient,
+      messages: ReturnType<typeof buildChatMessages>,
+      options: ChatCallOptions,
+    ) => {
+      let usage: Awaited<ReturnType<LlmClient["chatWithUsage"]>>;
+      try {
+        usage = await client.chatWithUsage(messages, options);
+      } catch (error) {
+        await recordTokenUsage(this.db, {
+          userId: bot?.owner_user_id,
+          botId: req.botAccountId,
+          promptTokens: 0,
+          completionTokens: 0,
+          username: owner?.username,
+          botName: bot?.display_name,
+        });
+        throw error;
+      }
+      await recordTokenUsage(this.db, {
+        userId: bot?.owner_user_id,
+        botId: req.botAccountId,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        username: owner?.username,
+        botName: bot?.display_name,
+      });
+      return usage;
+    };
 
     // Caption mode turns the image into text here, before anything else reads
     // the attachments — so history, memory retrieval and the roleplay prompt all
@@ -789,6 +819,7 @@ export class ChatService {
       const stableTurnKey = [
         req.botAccountId,
         req.peerId,
+        ...(batchItems?.length ? [] : [req.contextToken]),
         ...qualityTopics.map((topic) => `${topic.id}:${topic.text}`),
       ].join("\u0000");
       const conversationQualityPlan = planConversationQuality({
@@ -831,7 +862,7 @@ export class ChatService {
       qualityMessages = messages;
       qualityClient = chatClient;
       qualityCallOpts = callOpts;
-      const usage = await chatClient.chatWithUsage(messages, callOpts);
+      const usage = await callPromptLlm(chatClient, messages, callOpts);
       rawLlmText = usage.text;
       promptTokens = usage.promptTokens;
       completionTokens = usage.completionTokens;
@@ -857,7 +888,8 @@ export class ChatService {
       });
       if (violations.length > 0) {
         try {
-          const repairUsage = await qualityClient.chatWithUsage(
+          const repairUsage = await callPromptLlm(
+            qualityClient,
             [
               ...qualityMessages,
               { role: "assistant", content: rawLlmText },
@@ -887,7 +919,15 @@ export class ChatService {
             plan: qualityPlan,
             recentAssistantTexts,
           });
-          if (repairViolations.length === 0) finalized = repaired;
+          const repairedIsUsable =
+            repaired.parts.length > 0 && repaired.displayText.trim().length > 0;
+          if (
+            repairedIsUsable &&
+            scoreConversationQualityViolations(repairViolations) <
+              scoreConversationQualityViolations(violations)
+          ) {
+            finalized = repaired;
+          }
         } catch (error) {
           console.error(
             `[quality] bounded repair failed bot=${req.botAccountId}: ${
@@ -907,15 +947,10 @@ export class ChatService {
           .filter((message) => message.role === "assistant")
           .map((message) => message.content),
       });
-      if (remainingViolations.length > 0) {
-        await recordTokenUsage(this.db, {
-          userId: bot?.owner_user_id,
-          botId: req.botAccountId,
-          promptTokens,
-          completionTokens,
-          username: owner?.username,
-          botName: bot?.display_name,
-        });
+      if (
+        remainingViolations.length > 0 &&
+        qualityPlan.protectedTopicIds.length === 0
+      ) {
         return {
           kind: "skip",
           skipReason: "quality_check_failed",
@@ -933,14 +968,16 @@ export class ChatService {
       if (req.replyPlan) {
         return { kind: "skip", skipReason: "invalid_reply_plan" };
       }
-      await recordTokenUsage(this.db, {
-        userId: bot?.owner_user_id,
-        botId: req.botAccountId,
-        promptTokens,
-        completionTokens,
-        username: owner?.username,
-        botName: bot?.display_name,
-      });
+      if (!qualityPlan) {
+        await recordTokenUsage(this.db, {
+          userId: bot?.owner_user_id,
+          botId: req.botAccountId,
+          promptTokens,
+          completionTokens,
+          username: owner?.username,
+          botName: bot?.display_name,
+        });
+      }
       return {
         kind: "skip",
         skipReason: "empty_reply",
@@ -955,14 +992,16 @@ export class ChatService {
     // the next message on this peer reads history to build its prompt, so a
     // floating insertMessage would drop this turn out of context.
     await Promise.all([
-      recordTokenUsage(this.db, {
-        userId: bot?.owner_user_id,
-        botId: req.botAccountId,
-        promptTokens,
-        completionTokens,
-        username: owner?.username,
-        botName: bot?.display_name,
-      }),
+      qualityPlan
+        ? Promise.resolve()
+        : recordTokenUsage(this.db, {
+            userId: bot?.owner_user_id,
+            botId: req.botAccountId,
+            promptTokens,
+            completionTokens,
+            username: owner?.username,
+            botName: bot?.display_name,
+          }),
       // Store plain bubbles text in history (never raw JSON wrapper)
       insertMessage(this.db, {
         botAccountId: req.botAccountId,

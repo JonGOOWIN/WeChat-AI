@@ -11,6 +11,7 @@ export {
   inspectConversationQuality,
   planConversationQuality,
   resolveConversationQualitySettings,
+  scoreConversationQualityViolations,
   type ConversationQualityPlan,
   type ConversationQualitySettings,
   type ConversationQualityViolation,

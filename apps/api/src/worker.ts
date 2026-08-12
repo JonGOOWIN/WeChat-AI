@@ -2626,7 +2626,9 @@ export class BotWorkerManager {
               itemCount: sourceItems.length,
               decision: "reply",
               decisionReason: replyPlan.reason,
-              coveredItemIds: replyPlan.coveredItemIds,
+              coveredItemIds:
+                result.qualityPlan?.coveredTopicIds ?? replyPlan.coveredItemIds,
+              omittedTopicIds: result.qualityPlan?.omittedTopicIds ?? [],
               ms: Date.now() - t0,
             }),
           });
@@ -2644,7 +2646,9 @@ export class BotWorkerManager {
               itemCount: sourceItems.length,
               decision: "reply",
               decisionReason: replyPlan.reason,
-              coveredItemIds: replyPlan.coveredItemIds,
+              coveredItemIds:
+                result.qualityPlan?.coveredTopicIds ?? replyPlan.coveredItemIds,
+              omittedTopicIds: result.qualityPlan?.omittedTopicIds ?? [],
               ms: Date.now() - t0,
               parts: parts.length,
             },

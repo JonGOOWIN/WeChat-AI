@@ -553,4 +553,25 @@ describe("RuntimeConfigManager", () => {
     await mgr.refresh();
     assert.equal(cfg.chatflowMaxSteps, 32);
   });
+
+  it("keeps all last-known-good quality settings when one known value is corrupt", async () => {
+    await mgr.patch({ patch: { replyCoveragePercent: 55 }, actor: "tester" });
+    assert.equal(cfg.replyCoveragePercent, 55);
+    assert.equal(cfg.replyFollowUpPercent, 20);
+    const appliedBefore = applied.length;
+
+    db.store.set("wa:settings:runtime", {
+      values: {
+        replyCoveragePercent: "NaN",
+        replyFollowUpPercent: 80,
+      },
+      updatedAt: "corrupt-quality-doc",
+      updatedBy: "peer-node",
+    });
+
+    assert.equal(await mgr.refresh(), false);
+    assert.equal(cfg.replyCoveragePercent, 55);
+    assert.equal(cfg.replyFollowUpPercent, 20);
+    assert.equal(applied.length, appliedBefore);
+  });
 });

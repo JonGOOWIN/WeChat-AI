@@ -52,6 +52,8 @@ export interface ReplyFilterResult {
   usedFallback: boolean;
   promptTokens: number;
   completionTokens: number;
+  /** Number of filter LLM requests attempted (0 when disabled/blank, else 1). */
+  requestCount: 0 | 1;
 }
 
 export interface ReplyFilterOptions {
@@ -68,6 +70,7 @@ function emptyResult(): ReplyFilterResult {
     usedFallback: false,
     promptTokens: 0,
     completionTokens: 0,
+    requestCount: 0,
   };
 }
 
@@ -163,6 +166,7 @@ function parseToResult(
     usedFallback: boolean;
     promptTokens: number;
     completionTokens: number;
+    requestCount: 0 | 1;
   },
 ): ReplyFilterResult {
   // When maxStickers is 0 we still want to detect sticker objects and turn them
@@ -224,6 +228,7 @@ function parseToResult(
     usedFallback: opts.usedFallback,
     promptTokens: opts.promptTokens,
     completionTokens: opts.completionTokens,
+    requestCount: opts.requestCount,
   };
 }
 
@@ -265,6 +270,7 @@ export class ReplyFilter {
         usedFallback: true,
         promptTokens: 0,
         completionTokens: 0,
+        requestCount: 0,
       });
     }
 
@@ -290,6 +296,7 @@ export class ReplyFilter {
           usedFallback: true,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
+          requestCount: 1,
         });
       }
 
@@ -302,6 +309,7 @@ export class ReplyFilter {
         usedFallback: false,
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
+        requestCount: 1,
       });
 
       // Only an unparseable filter response falls back to the primary output.
@@ -317,6 +325,7 @@ export class ReplyFilter {
           usedFallback: true,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
+          requestCount: 1,
         });
       }
 
@@ -331,6 +340,7 @@ export class ReplyFilter {
         usedFallback: true,
         promptTokens: 0,
         completionTokens: 0,
+        requestCount: 1,
       });
     }
   }

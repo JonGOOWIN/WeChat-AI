@@ -230,4 +230,13 @@ describe("shipped defaults: conversation quality follows RULE-002", () => {
       /reply length weights/i,
     );
   });
+
+  it("rounds fractional turn windows consistently with runtime PATCH", () => {
+    const cfg = loadConfig({
+      EMOTION_CONTINUITY_TURNS: "4.9",
+      REPETITION_WINDOW_ASSISTANT_TURNS: "12.5",
+    } as NodeJS.ProcessEnv);
+    assert.equal(cfg.emotionContinuityTurns, 5);
+    assert.equal(cfg.repetitionWindowAssistantTurns, 13);
+  });
 });

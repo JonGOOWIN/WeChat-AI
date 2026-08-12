@@ -356,6 +356,15 @@ function boundedNumber(
   return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
 
+function boundedInteger(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  return Math.round(boundedNumber(raw, fallback, min, max));
+}
+
 export function parseReplyCountWeights(
   raw: string | undefined,
 ): [number, number, number, number] {
@@ -610,8 +619,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     replyLengthWeightShort: replyLengthWeights[0],
     replyLengthWeightNormal: replyLengthWeights[1],
     replyLengthWeightLong: replyLengthWeights[2],
-    emotionContinuityTurns: boundedNumber(env.EMOTION_CONTINUITY_TURNS, 4, 0, 20),
-    repetitionWindowAssistantTurns: boundedNumber(
+    emotionContinuityTurns: boundedInteger(env.EMOTION_CONTINUITY_TURNS, 4, 0, 20),
+    repetitionWindowAssistantTurns: boundedInteger(
       env.REPETITION_WINDOW_ASSISTANT_TURNS,
       12,
       0,

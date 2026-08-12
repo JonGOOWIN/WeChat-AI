@@ -4,6 +4,7 @@ import {
   approvePeer,
   clearMessages,
   getPersonaBySlug,
+  getUsageDayStats,
   insertMessage,
   listRecentMessages,
   openDatabase,
@@ -53,10 +54,10 @@ function asLlm(fake: CapturingLlm): LlmClient {
 describe("ChatService global conversation quality (Redis)", () => {
   it("sends the shipped quality defaults and enough repetition history to the real model prompt", async (t) => {
     const db = openDatabase(redisUrl);
+    t.after(() => db.close());
     try {
       await db.ping();
     } catch {
-      await db.close();
       t.skip("Redis not available");
       return;
     }
@@ -117,15 +118,14 @@ describe("ChatService global conversation quality (Redis)", () => {
       messages.slice(1, -1).length >= 24,
       `expected at least 24 history entries, got ${messages.slice(1, -1).length}`,
     );
-    await db.close();
   });
 
   it("hot-applies partial global settings without changing protected topics or retry decisions", async (t) => {
     const db = openDatabase(redisUrl);
+    t.after(() => db.close());
     try {
       await db.ping();
     } catch {
-      await db.close();
       t.skip("Redis not available");
       return;
     }
@@ -156,20 +156,44 @@ describe("ChatService global conversation quality (Redis)", () => {
     const request = {
       botAccountId: botId,
       peerId,
-      text: "今天路上很多人。請提醒我帶傘？",
+      text: "走吧。在嗎。請提醒我帶傘？",
       contextToken: "quality-hot-apply",
       batchItems: [
-        { id: "ordinary", text: "今天路上很多人", attachments: [] },
+        { id: "ordinary", text: "走吧", attachments: [] },
+        { id: "modal", text: "在嗎", attachments: [] },
         { id: "protected", text: "請提醒我帶傘？", attachments: [] },
       ],
+      replyPlan: {
+        decision: "reply" as const,
+        targetPartCount: 1 as const,
+        coveredItemIds: ["ordinary", "modal", "protected"],
+        reason: "reply-obligation" as const,
+        skipBiasPercent: 10,
+        items: [
+          { id: "ordinary", kind: "continuation" as const, replyObligation: true },
+          {
+            id: "modal",
+            kind: "new-question-or-request" as const,
+            replyObligation: true,
+          },
+          {
+            id: "protected",
+            kind: "new-question-or-request" as const,
+            replyObligation: true,
+          },
+        ],
+      },
     };
     const firstResult = await chat.handleInbound(request);
-    assert.deepEqual(firstResult.qualityPlan?.coveredTopicIds, ["protected"]);
+    assert.deepEqual(firstResult.qualityPlan?.coveredTopicIds, [
+      "modal",
+      "protected",
+    ]);
     assert.deepEqual(firstResult.qualityPlan?.omittedTopicIds, ["ordinary"]);
     assert.match(firstResult.qualityPlan?.stableTurnKey ?? "", /^[0-9a-f]{8}$/);
     assert.ok(!firstResult.qualityPlan?.stableTurnKey.includes(peerId));
     const firstSystem = (llm.calls[0] as Array<{ content: string }>)[0]!.content;
-    assert.match(firstSystem, /必須回覆的 topic ID：protected/);
+    assert.match(firstSystem, /必須回覆的 topic ID：modal, protected/);
     assert.match(firstSystem, /可省略的 topic ID：ordinary/);
     assert.match(firstSystem, /不要追問；整份可見回覆 21–60 字/);
 
@@ -179,18 +203,79 @@ describe("ChatService global conversation quality (Redis)", () => {
     await chat.handleInbound(request);
     const secondSystem = (llm.calls[1] as Array<{ content: string }>)[0]!.content;
     assert.match(secondSystem, /回覆覆蓋率：0%/);
-    assert.match(secondSystem, /必須回覆的 topic ID：protected/);
+    assert.match(secondSystem, /必須回覆的 topic ID：modal, protected/);
     assert.match(secondSystem, /可省略的 topic ID：ordinary/);
     assert.match(secondSystem, /不要追問；整份可見回覆 61–160 字/);
-    await db.close();
+    chat.applyRuntimeOptions({
+      conversationQuality: {
+        emotionContinuityTurns: 4.9,
+        repetitionWindowAssistantTurns: 12.5,
+      },
+    });
+
+    const legacyBase = {
+      botAccountId: botId,
+      peerId,
+      text: "同一句 legacy inbound",
+    };
+    const retryA1 = await chat.handleInbound({
+      ...legacyBase,
+      contextToken: "legacy-turn-a",
+    });
+    assert.equal(retryA1.qualityPlan?.emotionContinuityTurns, 5);
+    assert.equal(retryA1.qualityPlan?.repetitionWindowAssistantTurns, 13);
+    const retryA2 = await chat.handleInbound({
+      ...legacyBase,
+      contextToken: "legacy-turn-a",
+    });
+    const retryB = await chat.handleInbound({
+      ...legacyBase,
+      contextToken: "legacy-turn-b",
+    });
+    assert.equal(
+      retryA1.qualityPlan?.stableTurnKey,
+      retryA2.qualityPlan?.stableTurnKey,
+    );
+    assert.notEqual(
+      retryA1.qualityPlan?.stableTurnKey,
+      retryB.qualityPlan?.stableTurnKey,
+    );
+    const directModal = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "在嗎",
+      contextToken: "legacy-direct-modal",
+    });
+    assert.deepEqual(directModal.qualityPlan?.protectedTopicIds, ["turn"]);
+    assert.deepEqual(directModal.qualityPlan?.coveredTopicIds, ["turn"]);
+    for (const [index, text] of [
+      "在嗎",
+      "在吗 ！",
+      "你好嗎？",
+      "你呢…",
+      "有空吗 啊。",
+      "你在做什麼",
+    ].entries()) {
+      const modalVariant = await chat.handleInbound({
+        botAccountId: botId,
+        peerId,
+        text,
+        contextToken: `legacy-direct-modal-${index}`,
+      });
+      assert.deepEqual(
+        modalVariant.qualityPlan?.protectedTopicIds,
+        ["turn"],
+        text,
+      );
+    }
   });
 
   it("repairs a violating reply at most once before storing a single assistant turn", async (t) => {
     const db = openDatabase(redisUrl);
+    t.after(() => db.close());
     try {
       await db.ping();
     } catch {
-      await db.close();
       t.skip("Redis not available");
       return;
     }
@@ -212,12 +297,12 @@ describe("ChatService global conversation quality (Redis)", () => {
       peerId,
       personaId: persona.id,
       role: "assistant",
-      content: "放心吧，我會一直陪著你",
+      content: "週五下午三點在南門碰面記得帶藍色文件夾",
       contextToken: "seed",
     });
 
     const llm = new CapturingLlm([
-      '{"messages":["放心吧，我會一直陪著你，什麼事情都可以慢慢告訴我，我會一直都在這裡？"]}',
+      '{"messages":["週五下午三點在南門碰面記得帶藍色文件夾，另外出門以前請再次確認所有資料是否完整，若有任何變動也請立刻告訴我，並且提早十分鐘到達約定地點不要遲到？"]}',
       '{"messages":["我記住了"]}',
     ]);
     const chat = new ChatService(db, asLlm(llm), {
@@ -225,7 +310,7 @@ describe("ChatService global conversation quality (Redis)", () => {
       stickersEnabled: false,
       conversationQuality: {
         followUpPercent: 0,
-        lengthWeights: [100, 0, 0],
+        lengthWeights: [0, 100, 0],
         repetitionWindowAssistantTurns: 12,
       },
     });
@@ -250,15 +335,15 @@ describe("ChatService global conversation quality (Redis)", () => {
     assert.equal(history.at(-1)?.content, "我記住了");
 
     const failingLlm = new CapturingLlm([
-      '{"messages":["放心吧，我會一直陪著你，什麼事情都可以慢慢告訴我，我會一直都在這裡？"]}',
-      '{"messages":["放心吧，我會一直陪著你，什麼事情都可以慢慢告訴我，我會一直都在這裡？"]}',
+      '{"messages":["週五下午三點在南門碰面記得帶藍色文件夾，另外出門以前請再次確認所有資料是否完整，若有任何變動也請立刻告訴我，並且提早十分鐘到達約定地點不要遲到？"]}',
+      '{"messages":["週五下午三點在南門碰面記得帶藍色文件夾？"]}',
     ]);
     const failingChat = new ChatService(db, asLlm(failingLlm), {
       memoryExtractEveryN: 999,
       stickersEnabled: false,
       conversationQuality: {
         followUpPercent: 0,
-        lengthWeights: [100, 0, 0],
+        lengthWeights: [0, 100, 0],
         repetitionWindowAssistantTurns: 12,
       },
     });
@@ -268,16 +353,224 @@ describe("ChatService global conversation quality (Redis)", () => {
       text: "請再說一次？",
       contextToken: "quality-repair-failed",
     });
-    assert.equal(failed.kind, "skip");
-    assert.equal(failed.skipReason, "quality_check_failed");
+    assert.equal(failed.kind, "reply");
+    assert.deepEqual(failed.bubbles, ["週五下午三點在南門碰面記得帶藍色文件夾？"]);
     assert.deepEqual(failed.qualityPlan?.coveredTopicIds, ["turn"]);
     assert.equal(failingLlm.calls.length, 2, "repair failure never loops");
     const afterFailure = await listRecentMessages(db, botId, peerId, 20, persona.id);
     assert.equal(
       afterFailure.filter((message) => message.role === "assistant").length,
-      2,
-      "failed repair stores no assistant turn",
+      3,
+      "protected inbound stores exactly one best-effort assistant turn",
     );
-    await db.close();
+
+    await insertMessage(db, {
+      botAccountId: botId,
+      peerId,
+      personaId: persona.id,
+      role: "assistant",
+      content: "我會一直在這裡陪著你",
+      contextToken: "common-reassurance-seed",
+    });
+    const reassuranceLlm = new CapturingLlm([
+      '{"messages":["我會一直在這裡陪著你"]}',
+    ]);
+    const reassuranceChat = new ChatService(db, asLlm(reassuranceLlm), {
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      conversationQuality: {
+        followUpPercent: 0,
+        lengthWeights: [0, 100, 0],
+        repetitionWindowAssistantTurns: 12,
+      },
+    });
+    const reassurance = await reassuranceChat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "我真的很難過",
+      contextToken: "common-reassurance",
+    });
+    assert.equal(reassurance.kind, "reply");
+    assert.equal(
+      reassuranceLlm.calls.length,
+      1,
+      "a short common reassurance does not trigger repetition repair",
+    );
+
+    const urlLlm = new CapturingLlm([
+      '{"messages":["請看 https://example.com/search?q=雨傘"]}',
+    ]);
+    const urlChat = new ChatService(db, asLlm(urlLlm), {
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      conversationQuality: {
+        followUpPercent: 0,
+        lengthWeights: [0, 100, 0],
+        repetitionWindowAssistantTurns: 12,
+      },
+    });
+    const urlReply = await urlChat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "給我搜尋網址",
+      contextToken: "url-query-not-question",
+    });
+    assert.equal(urlReply.kind, "reply");
+    assert.equal(urlLlm.calls.length, 1, "a URL query is not a follow-up");
+
+    const modalLlm = new CapturingLlm([
+      '{"messages":["你現在方便嗎"]}',
+      '{"messages":["稍後再聊"]}',
+    ]);
+    const modalChat = new ChatService(db, asLlm(modalLlm), {
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      conversationQuality: {
+        followUpPercent: 0,
+        lengthWeights: [0, 100, 0],
+        repetitionWindowAssistantTurns: 12,
+      },
+    });
+    const modalReply = await modalChat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "先說重點",
+      contextToken: "modal-follow-up",
+    });
+    assert.equal(modalReply.kind, "reply");
+    assert.deepEqual(modalReply.bubbles, ["稍後再聊"]);
+    assert.equal(modalLlm.calls.length, 2, "a modal-ending question is repaired");
+
+    const adjacentUrlLlm = new CapturingLlm([
+      '{"messages":["看https://a.example/p?b=1好嗎"]}',
+      '{"messages":["稍後再看"]}',
+    ]);
+    const adjacentUrlChat = new ChatService(db, asLlm(adjacentUrlLlm), {
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      conversationQuality: {
+        followUpPercent: 0,
+        lengthWeights: [0, 100, 0],
+        repetitionWindowAssistantTurns: 12,
+      },
+    });
+    const adjacentUrlReply = await adjacentUrlChat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "先給連結",
+      contextToken: "url-followed-by-modal",
+    });
+    assert.equal(adjacentUrlReply.kind, "reply");
+    assert.deepEqual(adjacentUrlReply.bubbles, ["稍後再看"]);
+    assert.equal(
+      adjacentUrlLlm.calls.length,
+      2,
+      "URL query is ignored while adjacent CJK modal remains a question",
+    );
+
+    const ordinaryAssistantBefore = (
+      await listRecentMessages(db, botId, peerId, 100, persona.id)
+    ).filter((message) => message.role === "assistant").length;
+    const ordinaryLong =
+      "這是一段刻意超過短回答上限而且沒有任何受保護話題需要最佳努力送出的普通回答";
+    const ordinaryLlm = new CapturingLlm([
+      JSON.stringify({ messages: [ordinaryLong] }),
+      JSON.stringify({ messages: [ordinaryLong] }),
+    ]);
+    const ordinaryChat = new ChatService(db, asLlm(ordinaryLlm), {
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      conversationQuality: {
+        followUpPercent: 0,
+        lengthWeights: [100, 0, 0],
+        repetitionWindowAssistantTurns: 0,
+      },
+    });
+    const ordinary = await ordinaryChat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "今天路上很多人",
+      contextToken: "ordinary-fail-closed",
+    });
+    assert.equal(ordinary.kind, "skip");
+    assert.equal(ordinary.skipReason, "quality_check_failed");
+    assert.deepEqual(ordinary.qualityPlan?.protectedTopicIds, []);
+    const ordinaryAssistantAfter = (
+      await listRecentMessages(db, botId, peerId, 100, persona.id)
+    ).filter((message) => message.role === "assistant").length;
+    assert.equal(ordinaryAssistantAfter, ordinaryAssistantBefore);
+  });
+
+  it("accounts for all four generation and filter requests while storing one reply", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try {
+      await db.ping();
+    } catch {
+      t.skip("Redis not available");
+      return;
+    }
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = `bot_quality_usage_${process.pid}`;
+    const peerId = "quality_usage@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_quality",
+      displayName: "quality-test",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+    await insertMessage(db, {
+      botAccountId: botId,
+      peerId,
+      personaId: persona.id,
+      role: "assistant",
+      content: "週五下午三點在南門碰面記得帶藍色文件夾",
+      contextToken: "seed",
+    });
+
+    const longReply =
+      "週五下午三點在南門碰面記得帶藍色文件夾，另外出門以前請再次確認所有資料是否完整，若有任何變動也請立刻告訴我，並且提早十分鐘到達約定地點不要遲到？";
+    const llm = new CapturingLlm([
+      longReply,
+      JSON.stringify({ messages: [longReply] }),
+      "我記住了",
+      JSON.stringify({ messages: ["我記住了"] }),
+    ]);
+    const before = await getUsageDayStats(db);
+    const requestsBefore = before.by_bot[botId]?.requests ?? 0;
+    const tokensBefore = before.by_bot[botId]?.total_tokens ?? 0;
+    const chat = new ChatService(db, asLlm(llm), {
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      replyFilterEnabled: true,
+      conversationQuality: {
+        followUpPercent: 0,
+        lengthWeights: [0, 100, 0],
+        repetitionWindowAssistantTurns: 12,
+      },
+    });
+    const result = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "請再確認一次？",
+      contextToken: "quality-four-calls",
+    });
+
+    assert.equal(result.kind, "reply");
+    assert.deepEqual(result.bubbles, ["我記住了"]);
+    assert.equal(llm.calls.length, 4);
+    const after = await getUsageDayStats(db);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 4);
+    assert.equal((after.by_bot[botId]?.total_tokens ?? 0) - tokensBefore, 60);
+    const history = await listRecentMessages(db, botId, peerId, 20, persona.id);
+    assert.equal(
+      history.filter((message) => message.role === "assistant").length,
+      2,
+      "one seeded turn plus one final assistant reply",
+    );
   });
 });

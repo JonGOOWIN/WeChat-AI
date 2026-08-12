@@ -12,6 +12,7 @@ export interface ConversationQualityPlan extends ConversationQualitySettings {
   stableTurnKey: string;
   coveredTopicIds: string[];
   omittedTopicIds: string[];
+  protectedTopicIds: string[];
   followUp: boolean;
   lengthBucket: ReplyLengthBucket;
   lengthMinChars: number;
@@ -19,6 +20,16 @@ export interface ConversationQualityPlan extends ConversationQualitySettings {
 }
 
 export type ConversationQualityViolation = "length" | "follow-up" | "repetition";
+
+export function scoreConversationQualityViolations(
+  violations: readonly ConversationQualityViolation[],
+): number {
+  return violations.reduce((score, violation) => {
+    if (violation === "length") return score + 3;
+    if (violation === "follow-up") return score + 2;
+    return score + 1;
+  }, 0);
+}
 
 export function inspectConversationQuality(params: {
   visibleText: string;
@@ -33,7 +44,7 @@ export function inspectConversationQuality(params: {
   if (visibleLength > params.plan.lengthMaxChars) {
     violations.push("length");
   }
-  const questionCount = (params.visibleText.match(/[?？]/g) ?? []).length;
+  const questionCount = countQuestionIntents(params.visibleText);
   if ((!params.plan.followUp && questionCount > 0) || questionCount > 1) {
     violations.push("follow-up");
   }
@@ -44,14 +55,20 @@ export function inspectConversationQuality(params: {
       )
     : [])
     .map(normalizePhrase)
-    .filter((text) => text.length >= 6);
+    .filter((text) => text.length >= 16);
   if (
-    current.length >= 6 &&
+    current.length >= 16 &&
     recent.some(
-      (previous) =>
-        current.includes(previous) ||
-        previous.includes(current) ||
-        longestCommonSubstringLength(current, previous) >= 8,
+      (previous) => {
+        if (current.includes(previous) || previous.includes(current)) {
+          return Math.min(current.length, previous.length) >= 16;
+        }
+        const commonLength = longestCommonSubstringLength(current, previous);
+        return (
+          commonLength >= 16 &&
+          commonLength / Math.min(current.length, previous.length) >= 0.7
+        );
+      },
     )
   ) {
     violations.push("repetition");
@@ -130,8 +147,9 @@ export function planConversationQuality(params: {
     ) {
       protectedIds.push(topic.id);
     } else if (
-      topic.replyObligation !== false &&
-      isReplyObligation(topic.text, topic.hasAttachments === true)
+      topic.replyObligation === true ||
+      (topic.replyObligation !== false &&
+        isReplyObligation(topic.text, topic.hasAttachments === true))
     ) {
       ordinaryIds.push(topic.id);
     }
@@ -166,6 +184,7 @@ export function planConversationQuality(params: {
     stableTurnKey,
     coveredTopicIds,
     omittedTopicIds,
+    protectedTopicIds: protectedIds,
     followUp,
     ...lengths[lengthIndex]!,
   };
@@ -175,10 +194,36 @@ function isProtectedReplyObligation(text: string, hasAttachments: boolean): bool
   if (hasAttachments) return true;
   const value = text.trim();
   return (
-    /[?？]/.test(value) ||
+    containsQuestionIntent(value) ||
     /(?:請|请|幫|帮|麻煩|麻烦|拜託|拜托|記得|记得|提醒|告訴|告诉|給我|给我|需要你|決定|决定|確認|确认|同意|選|选|定案|敲定|就定|拍板)/.test(value) ||
     /(?:難過|难过|傷心|伤心|生氣|生气|害怕|焦慮|焦虑|委屈|想你|愛你|爱你|開心|开心|崩潰|崩溃)/.test(value)
   );
+}
+
+function countQuestionIntents(value: string): number {
+  const withoutUrls = stripUrls(value);
+  const punctuationCount = (withoutUrls.match(/[?？]/g) ?? []).length;
+  return punctuationCount > 0
+    ? punctuationCount
+    : containsQuestionIntent(withoutUrls)
+      ? 1
+      : 0;
+}
+
+function containsQuestionIntent(value: string): boolean {
+  const text = stripUrls(value).trim();
+  if (/[?？]/u.test(text)) return true;
+  if (/[嗎吗麼么]\s*[啊呀嘛吧]?\s*[.!！。…~～]*$/u.test(text)) return true;
+  return /(?:你|那你|所以|然後|然后|怎麼|怎么|為什麼|为什么|哪裡|哪里|在|有空|方便|可以|行|好|對|对|是|要|能|會|会|知道|明白|看見|看见|收到)呢\s*[.!！。…~～]*$/u.test(
+    text,
+  );
+}
+
+function stripUrls(value: string): string {
+  // Keep adjacent CJK text: a URL query may be followed immediately by a
+  // real modal-ending question. Model URLs are expected to be ASCII or
+  // percent-encoded, so a non-ASCII code point ends the URL.
+  return value.replace(/https?:\/\/[\x21-\x7e]+/giu, "");
 }
 
 function isReplyObligation(text: string, hasAttachments: boolean): boolean {
@@ -243,6 +288,6 @@ function clampPercent(value: number): number {
 
 function clampInteger(value: number | undefined, fallback: number, min: number, max: number): number {
   return Number.isFinite(value)
-    ? Math.min(max, Math.max(min, Math.trunc(value!)))
+    ? Math.min(max, Math.max(min, Math.round(value!)))
     : fallback;
 }

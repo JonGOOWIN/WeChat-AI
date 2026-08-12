@@ -565,6 +565,8 @@ describe("RuntimeConfigManager", () => {
       ["batch", "decide", "reply"],
     );
     assert.equal(items.get("replyBatchSilenceMs")?.displayDivisor, 1000);
+    assert.equal(items.get("replyBatchSilenceMs")?.step, 100);
+    assert.equal(items.get("replyBatchMaxWaitMs")?.step, 100);
     assert.match(items.get("replySkipBiasPercent")?.hint ?? "", /语义/);
     assert.match(items.get("replyCountWeight2")?.hint ?? "", /决定回复/);
     assert.match(items.get("replyCoveragePercent")?.hint ?? "", /话题覆盖/);

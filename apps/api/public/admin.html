@@ -6413,7 +6413,7 @@
       }
       if (item.type === "int" || item.type === "float") {
         const divisor = item.displayDivisor || 1;
-        const step = item.step != null ? item.step / divisor : item.type === "int" ? 1 : 0.01;
+        const step = item.step != null ? item.step / divisor : (item.type === "int" ? 1 : 0.01) / divisor;
         const min = item.min != null ? ` min="${esc(String(item.min / divisor))}"` : "";
         const max = item.max != null ? ` max="${esc(String(item.max / divisor))}"` : "";
         return (
@@ -6473,23 +6473,32 @@
       );
     }
 
-    function settingsConversationStageHtml(stage, rows, disabled) {
-      const labels = { batch: "批次", decide: "判断", reply: "回复" };
+    function settingsConversationSummary(stage) {
       const value = (key) => {
         const item = settingsState.items.find((candidate) => candidate.key === key);
         return item ? settingsDisplayValue(item, settingsPendingValue(item)) : "—";
       };
-      let summary = "";
-      if (stage === "batch") summary = `${value("replyBatchSilenceMs")} / ${value("replyBatchMaxWaitMs")} 秒`;
-      if (stage === "decide") summary = `跳过 ${value("replySkipBiasPercent")}% · 覆盖 ${value("replyCoveragePercent")}%`;
+      if (stage === "batch") return `${value("replyBatchSilenceMs")} / ${value("replyBatchMaxWaitMs")} 秒`;
+      if (stage === "decide") return `跳过 ${value("replySkipBiasPercent")}% · 覆盖 ${value("replyCoveragePercent")}%`;
       if (stage === "reply") {
         const countTotal = [1, 2, 3, 4].reduce((sum, n) => sum + Number(value(`replyCountWeight${n}`)), 0);
         const lengthTotal = ["Short", "Normal", "Long"].reduce((sum, bucket) => sum + Number(value(`replyLengthWeight${bucket}`)), 0);
-        summary = `条数 ${countTotal}% · 长度 ${lengthTotal}%`;
+        return `条数 ${countTotal}% · 长度 ${lengthTotal}%`;
       }
+      return "";
+    }
+
+    function settingsRefreshConversationSummaries() {
+      document.querySelectorAll("[data-conversation-summary]").forEach((el) => {
+        el.textContent = settingsConversationSummary(el.dataset.conversationSummary);
+      });
+    }
+
+    function settingsConversationStageHtml(stage, rows, disabled) {
+      const labels = { batch: "批次", decide: "判断", reply: "回复" };
       return `<div class="conversation-stage" data-conversation-stage="${stage}">` +
         `<div class="conversation-stage-head"><span class="conversation-stage-title">${labels[stage]}</span>` +
-        `<span class="conversation-stage-summary">${esc(summary)}</span></div>` +
+        `<span class="conversation-stage-summary" data-conversation-summary="${stage}">${esc(settingsConversationSummary(stage))}</span></div>` +
         `<div class="set-grid">${rows.map((r) => settingsRowHtml(r, disabled)).join("")}</div></div>`;
     }
 
@@ -6552,6 +6561,9 @@
             item.type === "secret" ? String(next) === "" : next === item.value;
           if (same) settingsState.dirty.delete(item.key);
           else settingsState.dirty.set(item.key, next);
+          if (item.stage && (item.type === "int" || item.type === "float")) {
+            settingsRefreshConversationSummaries();
+          }
           settingsSyncDirtyUi();
           if (item.type === "bool") renderSettings();
         };

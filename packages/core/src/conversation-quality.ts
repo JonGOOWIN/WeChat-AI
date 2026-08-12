@@ -21,6 +21,32 @@ export interface ConversationQualityPlan extends ConversationQualitySettings {
 
 export type ConversationQualityViolation = "length" | "follow-up" | "repetition";
 
+export interface ConversationQualityRuntimeSummary {
+  profile: ConversationQualitySettings;
+  reasonCodes: string[];
+}
+
+/** Privacy-safe activity payload: decisions and numeric profile, never turn data. */
+export function summarizeConversationQualityPlan(
+  plan: ConversationQualityPlan,
+): ConversationQualityRuntimeSummary {
+  return {
+    profile: {
+      coveragePercent: plan.coveragePercent,
+      followUpPercent: plan.followUpPercent,
+      lengthWeights: [...plan.lengthWeights] as [number, number, number],
+      emotionContinuityTurns: plan.emotionContinuityTurns,
+      repetitionWindowAssistantTurns: plan.repetitionWindowAssistantTurns,
+    },
+    reasonCodes: [
+      ...(plan.protectedTopicIds.length > 0 ? ["protected-obligation"] : []),
+      plan.omittedTopicIds.length > 0 ? "coverage-limited" : "coverage-complete",
+      plan.followUp ? "follow-up-selected" : "follow-up-not-selected",
+      `length-${plan.lengthBucket}`,
+    ],
+  };
+}
+
 export function scoreConversationQualityViolations(
   violations: readonly ConversationQualityViolation[],
 ): number {
@@ -44,22 +70,33 @@ export function inspectConversationQuality(params: {
   if (visibleLength > params.plan.lengthMaxChars) {
     violations.push("length");
   }
-  const questionCount = countQuestionIntents(params.visibleText);
+  const questionCount = countConversationQuestionIntents(params.visibleText);
   if ((!params.plan.followUp && questionCount > 0) || questionCount > 1) {
     violations.push("follow-up");
   }
-  const current = normalizePhrase(params.visibleText);
-  const recent = (params.plan.repetitionWindowAssistantTurns > 0
+  const recent = params.plan.repetitionWindowAssistantTurns > 0
     ? params.recentAssistantTexts.slice(
         -params.plan.repetitionWindowAssistantTurns,
       )
-    : [])
-    .map(normalizePhrase)
-    .filter((text) => text.length >= 16);
-  if (
+    : [];
+  if (hasRepeatedConversationPhrase(params.visibleText, recent)) {
+    violations.push("repetition");
+  }
+  return violations;
+}
+
+/** Same deterministic repetition signal used by runtime checks and fixtures. */
+export function hasRepeatedConversationPhrase(
+  visibleText: string,
+  recentAssistantTexts: readonly string[],
+): boolean {
+  const current = normalizePhrase(visibleText);
+  return (
     current.length >= 16 &&
-    recent.some(
-      (previous) => {
+    recentAssistantTexts
+      .map(normalizePhrase)
+      .filter((text) => text.length >= 16)
+      .some((previous) => {
         if (current.includes(previous) || previous.includes(current)) {
           return Math.min(current.length, previous.length) >= 16;
         }
@@ -68,12 +105,8 @@ export function inspectConversationQuality(params: {
           commonLength >= 16 &&
           commonLength / Math.min(current.length, previous.length) >= 0.7
         );
-      },
-    )
-  ) {
-    violations.push("repetition");
-  }
-  return violations;
+      })
+  );
 }
 
 export function buildConversationQualityRepairInstruction(
@@ -200,14 +233,22 @@ function isProtectedReplyObligation(text: string, hasAttachments: boolean): bool
   );
 }
 
-function countQuestionIntents(value: string): number {
-  const withoutUrls = stripUrls(value);
-  const punctuationCount = (withoutUrls.match(/[?？]/g) ?? []).length;
-  return punctuationCount > 0
-    ? punctuationCount
-    : containsQuestionIntent(withoutUrls)
-      ? 1
-      : 0;
+/** Shared runtime/evaluator question-intent seam; URL query strings are ignored. */
+export function countConversationQuestionIntents(value: string): number {
+  const visible = value.replace(/\[表情:[^\]]+\]/gu, "");
+  return visible
+    .split(/\r?\n/u)
+    .map((bubble) => stripUrls(bubble).trim())
+    .filter(Boolean)
+    .reduce((count, bubble) => {
+      const punctuationCount = (bubble.match(/[?？]/g) ?? []).length;
+      return count +
+        (punctuationCount > 0
+          ? punctuationCount
+          : containsQuestionIntent(bubble)
+            ? 1
+            : 0);
+    }, 0);
 }
 
 function containsQuestionIntent(value: string): boolean {

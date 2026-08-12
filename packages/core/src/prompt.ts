@@ -393,23 +393,7 @@ export function buildChatMessages(params: {
       ].join("\n")
     : "";
   const conversationQualityBlock = quality
-    ? [
-        "## 本輪對話品質計畫",
-        ...(params.adaptiveReplyPlan
-          ? [
-              `- 建議自然回覆 ${params.adaptiveReplyPlan.targetPartCount} 条；语境需要时可少于该数量，最多 4 条`,
-              "- 不得为了凑条数机械拆句；每条都应像真人微信中的独立语意气泡",
-            ]
-          : []),
-        `- 全域先驗：回覆覆蓋率：${quality.coveragePercent}%；追問目標：${quality.followUpPercent}%；短/普通/長：${quality.lengthWeights.map((weight) => `${weight}%`).join("/")}`,
-        `- 本輪穩定決策：${quality.followUp ? "自然追問一次" : "不要追問"}；整份可見回覆 ${quality.lengthMinChars}–${quality.lengthMaxChars} 字（${quality.lengthBucket}）`,
-        `- 必須回覆的 topic ID：${quality.coveredTopicIds.join(", ") || "無"}`,
-        `- 本輪可省略的 topic ID：${quality.omittedTopicIds.join(", ") || "無"}`,
-        "- 直接問題、明確請求、重要決定與情緒表達永遠不得因覆蓋率省略",
-        `- 情緒延續：最近 ${quality.emotionContinuityTurns} 個完成輪次；承接仍在延續的情緒，不要突然重置語氣`,
-        `- 重複檢查：最近 ${quality.repetitionWindowAssistantTurns} 個 assistant 輪次；避免重用相同套話或顯著片語`,
-        "- 字數按整份回覆計畫的可見文字合計，不按單一氣泡計算",
-      ].join("\n")
+    ? buildConversationQualityBlock(quality, params.adaptiveReplyPlan)
     : "";
 
   const system = [
@@ -442,6 +426,37 @@ export function buildChatMessages(params: {
       : buildUserContent(params.userText, params.attachments),
   });
   return messages;
+}
+
+/**
+ * Render the RULE-002 constraints independently of the persona prompt.
+ * Chatflow nodes use this public seam because a node may replace the persona
+ * system variable with its own custom system prompt.
+ */
+export function buildConversationQualityBlock(
+  quality: ConversationQualityPlan,
+  adaptiveReplyPlan?: {
+    targetPartCount: 1 | 2 | 3 | 4;
+    coveredItemIds: readonly string[];
+  },
+): string {
+  return [
+    "## 本輪對話品質計畫",
+    ...(adaptiveReplyPlan
+      ? [
+          `- 建議自然回覆 ${adaptiveReplyPlan.targetPartCount} 条；语境需要时可少于该数量，最多 4 条`,
+          "- 不得为了凑条数机械拆句；每条都应像真人微信中的独立语意气泡",
+        ]
+      : []),
+    `- 全域先驗：回覆覆蓋率：${quality.coveragePercent}%；追問目標：${quality.followUpPercent}%；短/普通/長：${quality.lengthWeights.map((weight) => `${weight}%`).join("/")}`,
+    `- 本輪穩定決策：${quality.followUp ? "自然追問一次" : "不要追問"}；整份可見回覆 ${quality.lengthMinChars}–${quality.lengthMaxChars} 字（${quality.lengthBucket}）`,
+    `- 必須回覆的 topic ID：${quality.coveredTopicIds.join(", ") || "無"}`,
+    `- 本輪可省略的 topic ID：${quality.omittedTopicIds.join(", ") || "無"}`,
+    "- 直接問題、明確請求、重要決定與情緒表達永遠不得因覆蓋率省略",
+    `- 情緒延續：最近 ${quality.emotionContinuityTurns} 個完成輪次；承接仍在延續的情緒，不要突然重置語氣`,
+    `- 重複檢查：最近 ${quality.repetitionWindowAssistantTurns} 個 assistant 輪次；避免重用相同套話或顯著片語`,
+    "- 字數按整份回覆計畫的可見文字合計，不按單一氣泡計算",
+  ].join("\n");
 }
 
 /** Proactive outreach: no new user message; model may skip. */

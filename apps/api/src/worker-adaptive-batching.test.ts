@@ -143,8 +143,19 @@ describe("BotWorkerManager adaptive reply seam", () => {
             { kind: "text" as const, text: "第二条" },
           ],
           qualityPlan: {
+            coveragePercent: 70,
+            followUpPercent: 20,
+            lengthWeights: [60, 30, 10],
+            emotionContinuityTurns: 4,
+            repetitionWindowAssistantTurns: 12,
+            stableTurnKey: "must-not-leak",
             coveredTopicIds: ["quality-covered"],
             omittedTopicIds: ["quality-omitted"],
+            protectedTopicIds: ["private-protected-id"],
+            followUp: false,
+            lengthBucket: "normal",
+            lengthMinChars: 21,
+            lengthMaxChars: 60,
           },
         };
       },
@@ -218,6 +229,20 @@ describe("BotWorkerManager adaptive reply seam", () => {
       const event = activityEvents.find((candidate) => candidate.type === type);
       assert.deepEqual(event?.data?.coveredItemIds, ["quality-covered"]);
       assert.deepEqual(event?.data?.omittedTopicIds, ["quality-omitted"]);
+      assert.deepEqual(event?.data?.conversationQuality, {
+        coveragePercent: 70,
+        followUpPercent: 20,
+        lengthWeights: [60, 30, 10],
+        emotionContinuityTurns: 4,
+        repetitionWindowAssistantTurns: 12,
+      });
+      assert.deepEqual(event?.data?.qualityReasonCodes, [
+        "protected-obligation",
+        "coverage-limited",
+        "follow-up-not-selected",
+        "length-normal",
+      ]);
+      assert.doesNotMatch(JSON.stringify(event?.data), /must-not-leak|private-protected-id/);
     }
     assert.equal(await worker.processNextReply(), false);
   });

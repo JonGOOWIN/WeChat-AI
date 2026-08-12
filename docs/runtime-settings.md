@@ -76,7 +76,7 @@ wa:settings:runtime（Redis JSON）  ←  管理面板写入
   直接用秒填写。1／2／3／4 条回复是已决定回复后的百分比分布，四项必须合计 100%；
   短／普通／长回答同样是百分比分布，三项必须合计 100%。保存时静默等待不得大于最长等待，
   负数、非有限值、越界或合计错误会整笔拒绝，不会静默修正。
-- 一般 prompt 模式对话还会在同一轮生成稳定的质量计划：`replyCoveragePercent` 默认
+- 一般 prompt、Chatflow 与网页试聊会在同一轮生成稳定的质量计划：`replyCoveragePercent` 默认
   70，只决定已回复批次里一般话题的覆盖，不会丢掉直接问题、明确请求、重要决定或情绪
   表达；`replyFollowUpPercent` 默认 20；短／普通／长权重默认 60／30／10，对应整份可见
   回复 1–20／21–60／61–160 字。`emotionContinuityTurns` 默认 4 个完成轮次，
@@ -86,6 +86,9 @@ wa:settings:runtime（Redis JSON）  ←  管理面板写入
   不会产生重复气泡。默认关闭二次 AI 排版时，最坏是初稿＋重写共 2 次 LLM 调用；若同时
   开启 `replyFilterEnabled`，初稿与重写各自还会排版一次，最坏共 4 次 LLM 调用，会增加
   成本与延迟。管理面板的「重复检查 assistant 轮数」提示会显示这项代价。
+  正式微信逐栏按全局→人设→联系人合并；网页试聊只有全局→人设。Chatflow 的每个 LLM
+  节点都会附加质量区块，即使节点自定义 system 且未引用人设变量。完整校准方式与限制见
+  `docs/conversation-quality.md`。
 - `ChatService.webSearch` 原本在构造函数里判断一次，`WEB_SEARCH_ENABLED=false` 启动就永远
   是 `null`。现在按 tools 配置的指纹惰性重建。
 - `BotWorkerManager` 的 10 个 `readonly` 标量改成可写，且 setter 里复刻了构造函数的

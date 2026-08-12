@@ -8,21 +8,32 @@ export {
 export {
   DEFAULT_CONVERSATION_QUALITY,
   buildConversationQualityRepairInstruction,
+  countConversationQuestionIntents,
   inspectConversationQuality,
+  hasRepeatedConversationPhrase,
   planConversationQuality,
   resolveConversationQualitySettings,
   scoreConversationQualityViolations,
+  summarizeConversationQualityPlan,
   type ConversationQualityPlan,
+  type ConversationQualityRuntimeSummary,
   type ConversationQualitySettings,
   type ConversationQualityViolation,
   type ReplyLengthBucket,
 } from "./conversation-quality.js";
+export {
+  evaluateConversationQualityFixture,
+  type ConversationQualityEvaluation,
+  type ConversationQualityFixture,
+  type EvaluatedReplyLengthBucket,
+} from "./conversation-quality-evaluator.js";
 export {
   applyPromptTemplate,
   buildAttachmentBlock,
   buildBatchUserContent,
   buildBotIdentityBlock,
   buildChatMessages,
+  buildConversationQualityBlock,
   buildImageCaptionMessages,
   buildMemoryExtractMessages,
   buildProactiveInstruction,

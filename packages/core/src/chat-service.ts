@@ -620,18 +620,15 @@ export class ChatService {
     }
 
     // Peer settings live outside Peer JSON so activity/proactive RMWs cannot
-    // overwrite them. Chatflow remains outside RULE-002 peer overrides.
-    const peerQuality =
-      persona.mode === "chatflow"
-        ? {}
-        : await getPeerConversationQuality(
-            this.db,
-            req.botAccountId,
-            req.peerId,
-          );
+    // overwrite them. RULE-002 applies to every normal inbound AI mode.
+    const peerQuality = await getPeerConversationQuality(
+      this.db,
+      req.botAccountId,
+      req.peerId,
+    );
     const qualitySettings = resolveConversationQualitySettings({
       ...this.opts.conversationQuality,
-      ...(persona.mode === "chatflow" ? {} : persona.conversation_quality),
+      ...persona.conversation_quality,
       ...peerQuality,
     });
     const qualityHistoryLimit = Math.min(
@@ -772,10 +769,43 @@ export class ChatService {
     let rawLlmText: string;
     let promptTokens = 0;
     let completionTokens = 0;
+    // Quality planning and token accounting are independent concerns. Prompt
+    // mode records each call inside callPromptLlm; Chatflow reports aggregate
+    // graph usage and must be recorded once after the graph completes.
+    let primaryUsageRecorded = false;
     let qualityPlan: ConversationQualityPlan | undefined;
     let qualityMessages: ReturnType<typeof buildChatMessages> | undefined;
     let qualityClient: LlmClient | undefined;
     let qualityCallOpts: ChatCallOptions | undefined;
+
+    const qualityTopics = batchItems?.length
+      ? batchItems.map((item) => {
+          const adaptiveItem = req.replyPlan?.items.find(
+            (planned) => planned.id === item.id,
+          );
+          return {
+            id: item.id,
+            text: item.text,
+            hasAttachments: item.attachments.length > 0,
+            replyObligation: adaptiveItem?.replyObligation,
+            protectedObligation:
+              adaptiveItem?.kind === "new-question-or-request" ||
+              adaptiveItem?.kind === "emotional-bid" ||
+              adaptiveItem?.kind === "correction",
+          };
+        })
+      : [{ id: "turn", text: req.text, hasAttachments: attachments.length > 0 }];
+    const stableTurnKey = [
+      req.botAccountId,
+      req.peerId,
+      ...(batchItems?.length ? [] : [req.contextToken]),
+      ...qualityTopics.map((topic) => `${topic.id}:${topic.text}`),
+    ].join("\u0000");
+    qualityPlan = planConversationQuality({
+      stableTurnKey,
+      topics: qualityTopics,
+      settings: qualitySettings,
+    });
 
     if (persona.mode === "chatflow") {
       // Chatflow MVP: proactive path still uses prompt mode elsewhere;
@@ -807,39 +837,12 @@ export class ChatService {
         memories: selectedMemories.map((m) => m.content),
         webSearchEnabled: Boolean(persona.web_search_enabled),
         upstream,
+        qualityPlan,
       });
       rawLlmText = cf.text;
       promptTokens = cf.promptTokens;
       completionTokens = cf.completionTokens;
     } else {
-      const qualityTopics = batchItems?.length
-        ? batchItems.map((item) => {
-            const adaptiveItem = req.replyPlan?.items.find(
-              (planned) => planned.id === item.id,
-            );
-            return {
-              id: item.id,
-              text: item.text,
-              hasAttachments: item.attachments.length > 0,
-              replyObligation: adaptiveItem?.replyObligation,
-              protectedObligation:
-                adaptiveItem?.kind === "new-question-or-request" ||
-                adaptiveItem?.kind === "emotional-bid" ||
-                adaptiveItem?.kind === "correction",
-            };
-          })
-        : [{ id: "turn", text: req.text, hasAttachments: attachments.length > 0 }];
-      const stableTurnKey = [
-        req.botAccountId,
-        req.peerId,
-        ...(batchItems?.length ? [] : [req.contextToken]),
-        ...qualityTopics.map((topic) => `${topic.id}:${topic.text}`),
-      ].join("\u0000");
-      const conversationQualityPlan = planConversationQuality({
-        stableTurnKey,
-        topics: qualityTopics,
-        settings: qualitySettings,
-      });
       const messages = buildChatMessages({
         systemPrompt,
         memories: selectedMemories,
@@ -858,7 +861,7 @@ export class ChatService {
                 coveredItemIds: req.replyPlan.coveredItemIds,
               }
             : undefined,
-        conversationQualityPlan,
+        conversationQualityPlan: qualityPlan,
       });
 
       const { client: chatClient, callOpts } = await this.resolveChatClient({
@@ -871,11 +874,11 @@ export class ChatService {
       if (visionModel && attachments.some((a) => a.dataUri)) {
         callOpts.model = visionModel;
       }
-      qualityPlan = conversationQualityPlan;
       qualityMessages = messages;
       qualityClient = chatClient;
       qualityCallOpts = callOpts;
       const usage = await callPromptLlm(chatClient, messages, callOpts);
+      primaryUsageRecorded = true;
       rawLlmText = usage.text;
       promptTokens = usage.promptTokens;
       completionTokens = usage.completionTokens;
@@ -952,7 +955,10 @@ export class ChatService {
     }
     const { parts, bubbles, displayText, bubblesFromJson } = finalized;
 
-    if (qualityPlan) {
+    // Only prompt mode owns a bounded one-shot repair seam. Chatflow receives
+    // the same generation constraint in every LLM node, but must not silently
+    // drop a completed graph answer because there is no safe single-call repair.
+    if (qualityPlan && qualityMessages && qualityClient && qualityCallOpts) {
       const remainingViolations = inspectConversationQuality({
         visibleText: displayText,
         plan: qualityPlan,
@@ -981,7 +987,7 @@ export class ChatService {
       if (req.replyPlan) {
         return { kind: "skip", skipReason: "invalid_reply_plan" };
       }
-      if (!qualityPlan) {
+      if (!primaryUsageRecorded) {
         await recordTokenUsage(this.db, {
           userId: bot?.owner_user_id,
           botId: req.botAccountId,
@@ -1005,7 +1011,7 @@ export class ChatService {
     // the next message on this peer reads history to build its prompt, so a
     // floating insertMessage would drop this turn out of context.
     await Promise.all([
-      qualityPlan
+      primaryUsageRecorded
         ? Promise.resolve()
         : recordTokenUsage(this.db, {
             userId: bot?.owner_user_id,

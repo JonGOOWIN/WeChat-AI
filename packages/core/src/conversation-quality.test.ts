@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  countConversationQuestionIntents,
   inspectConversationQuality,
   planConversationQuality,
   resolveConversationQualitySettings,
+  summarizeConversationQualityPlan,
 } from "./conversation-quality.js";
 
 const settings = resolveConversationQualitySettings({
@@ -65,5 +67,46 @@ describe("conversation question intent", () => {
         visibleText,
       );
     }
+  });
+
+  it("counts question intent per visible bubble instead of only at the end of the whole reply", () => {
+    const cases = [
+      ["你現在方便嗎\n我先去忙", 1],
+      ["你現在方便嗎\n[表情:smile]", 1],
+      ["先忙完再說\n我晚點回來", 0],
+      ["請看 https://example.com/s?wd=test\n我先去忙", 0],
+      ["真的?\n確定？", 2],
+      ["你現在方便嗎", 1],
+    ] as const;
+
+    for (const [text, expected] of cases) {
+      assert.equal(countConversationQuestionIntents(text), expected, text);
+    }
+  });
+});
+
+describe("conversation quality runtime summary", () => {
+  it("exposes the selected profile and reason codes without turn content or identifiers", () => {
+    const plan = planConversationQuality({
+      stableTurnKey: "secret-peer-and-turn",
+      topics: [{ id: "private-topic-id", text: "請幫我確認時間？" }],
+      settings,
+    });
+    const summary = summarizeConversationQualityPlan(plan);
+
+    assert.deepEqual(summary.profile, {
+      coveragePercent: 100,
+      followUpPercent: 0,
+      lengthWeights: [0, 100, 0],
+      emotionContinuityTurns: 4,
+      repetitionWindowAssistantTurns: 0,
+    });
+    assert.deepEqual(summary.reasonCodes, [
+      "protected-obligation",
+      "coverage-complete",
+      "follow-up-not-selected",
+      "length-normal",
+    ]);
+    assert.doesNotMatch(JSON.stringify(summary), /secret-peer|private-topic/);
   });
 });

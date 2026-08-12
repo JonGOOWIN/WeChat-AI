@@ -42,6 +42,13 @@ const CHAT_KEYS: RuntimeSettingKey[] = [
   "chatflowHttpAllowlist",
   "chatflowMaxSteps",
   "chatflowMaxNodes",
+  "replyCoveragePercent",
+  "replyFollowUpPercent",
+  "replyLengthWeightShort",
+  "replyLengthWeightNormal",
+  "replyLengthWeightLong",
+  "emotionContinuityTurns",
+  "repetitionWindowAssistantTurns",
   "visionMode",
   "visionModel",
   "visionCaptionMaxTokens",
@@ -73,6 +80,13 @@ const TRYCHAT_KEYS: RuntimeSettingKey[] = [
   "chatflowHttpAllowlist",
   "chatflowMaxSteps",
   "chatflowMaxNodes",
+  "replyCoveragePercent",
+  "replyFollowUpPercent",
+  "replyLengthWeightShort",
+  "replyLengthWeightNormal",
+  "replyLengthWeightLong",
+  "emotionContinuityTurns",
+  "repetitionWindowAssistantTurns",
 ];
 
 const WORKER_KEYS: RuntimeSettingKey[] = [
@@ -214,6 +228,17 @@ export function applyRuntimeConfigToServices(
       chatflowHttpAllowHosts: cfg.chatflowHttpAllowlist,
       chatflowMaxSteps: cfg.chatflowMaxSteps,
       chatflowMaxNodes: cfg.chatflowMaxNodes,
+      conversationQuality: {
+        coveragePercent: cfg.replyCoveragePercent,
+        followUpPercent: cfg.replyFollowUpPercent,
+        lengthWeights: [
+          cfg.replyLengthWeightShort,
+          cfg.replyLengthWeightNormal,
+          cfg.replyLengthWeightLong,
+        ],
+        emotionContinuityTurns: cfg.emotionContinuityTurns,
+        repetitionWindowAssistantTurns: cfg.repetitionWindowAssistantTurns,
+      },
     });
   }
 

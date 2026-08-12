@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { ChatService } from "@wechat-ai/core";
+import type { ChatService, TryChatService } from "@wechat-ai/core";
 import { loadConfig } from "./config.js";
 import {
   applyRuntimeConfigToServices,
@@ -64,5 +64,21 @@ describe("runtime quality settings application", () => {
       emotionContinuityTurns: 5,
       repetitionWindowAssistantTurns: 16,
     });
+  });
+
+  it("hot-applies the same global quality settings to try-chat", () => {
+    const patches: Array<Parameters<TryChatService["applyRuntimeOptions"]>[0]> = [];
+    const cfg = loadConfig({ REPLY_COVERAGE_PERCENT: "46" } as NodeJS.ProcessEnv);
+    const targets = {
+      chat: { applyRuntimeOptions() {} },
+      tryChat: { applyRuntimeOptions: (patch: (typeof patches)[number]) => patches.push(patch) },
+      worker: { applyRuntimeConfig() {} },
+      activityBus: { applyRuntimeOptions() {} },
+    } as unknown as RuntimeConfigTargets;
+
+    applyRuntimeConfigToServices(new Set(["replyCoveragePercent"]), cfg, targets);
+
+    assert.equal(patches.length, 1);
+    assert.equal(patches[0]?.conversationQuality?.coveragePercent, 46);
   });
 });

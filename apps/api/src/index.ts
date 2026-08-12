@@ -227,6 +227,17 @@ async function main(): Promise<void> {
     chatflowHttpAllowHosts: cfg.chatflowHttpAllowlist,
     chatflowMaxSteps: cfg.chatflowMaxSteps,
     chatflowMaxNodes: cfg.chatflowMaxNodes,
+    conversationQuality: {
+      coveragePercent: cfg.replyCoveragePercent,
+      followUpPercent: cfg.replyFollowUpPercent,
+      lengthWeights: [
+        cfg.replyLengthWeightShort,
+        cfg.replyLengthWeightNormal,
+        cfg.replyLengthWeightLong,
+      ],
+      emotionContinuityTurns: cfg.emotionContinuityTurns,
+      repetitionWindowAssistantTurns: cfg.repetitionWindowAssistantTurns,
+    },
   });
 
   const worker = new BotWorkerManager({

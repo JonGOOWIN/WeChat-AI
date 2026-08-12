@@ -27,6 +27,7 @@ class CapturingLlm implements Pick<LlmClient, "chat" | "chatWithUsage"> {
 
   constructor(
     private readonly replies: string[] = ['{"messages":["收到"]}'],
+    private readonly usage = { promptTokens: 10, completionTokens: 5 },
   ) {}
 
   private nextReply(): string {
@@ -43,9 +44,9 @@ class CapturingLlm implements Pick<LlmClient, "chat" | "chatWithUsage"> {
     this.calls.push(messages);
     return {
       text: this.nextReply(),
-      promptTokens: 10,
-      completionTokens: 5,
-      totalTokens: 15,
+      promptTokens: this.usage.promptTokens,
+      completionTokens: this.usage.completionTokens,
+      totalTokens: this.usage.promptTokens + this.usage.completionTokens,
       model: "fake",
     };
   }
@@ -56,6 +57,132 @@ function asLlm(fake: CapturingLlm): LlmClient {
 }
 
 describe("ChatService global conversation quality (Redis)", () => {
+  it("applies global, persona and peer quality to Chatflow and keeps retry decisions stable", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try { await db.ping(); } catch { t.skip("Redis not available"); return; }
+    const persona = await createPersona(db, {
+      displayName: `chatflow-quality-${process.pid}`,
+      systemPrompt: "chatflow persona",
+      ownerUserId: "chatflow_quality_owner",
+      visibility: "private",
+      mode: "chatflow",
+      graphJson: {
+        version: 1,
+        nodes: [
+          { id: "start", type: "start" },
+          { id: "llm", type: "llm", data: { system: "custom node system" } },
+          { id: "answer", type: "answer", data: { answer: "{{llm.text}}" } },
+        ],
+        edges: [
+          { id: "e1", source: "start", target: "llm" },
+          { id: "e2", source: "llm", target: "answer" },
+        ],
+      },
+      conversationQuality: { coveragePercent: 45, followUpPercent: 100 },
+    });
+    const botId = `chatflow_quality_${process.pid}_${Math.random()}`;
+    const peerId = "chatflow-quality@im.wechat";
+    await upsertBotAccount(db, { id: botId, ownerUserId: "chatflow_quality_owner", displayName: "chatflow", botToken: "token" });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+    await setPeerConversationQuality(db, botId, peerId, {
+      coveragePercent: 92,
+      lengthWeights: [100, 0, 0],
+    });
+    const llm = new CapturingLlm(
+      ['{"messages":["收到"]}', '{"messages":["收到"]}'],
+      { promptTokens: 500, completionTokens: 200 },
+    );
+    const chat = new ChatService(db, asLlm(llm), {
+      stickersEnabled: false,
+      memoryExtractEveryN: 999,
+      conversationQuality: { coveragePercent: 70, repetitionWindowAssistantTurns: 8 },
+    });
+    const request = {
+      botAccountId: botId,
+      peerId,
+      text: "請確認時間？",
+      contextToken: "stable-chatflow-turn",
+    };
+
+    const usageBefore = await getUsageDayStats(db);
+    const requestsBefore = usageBefore.by_bot[botId]?.requests ?? 0;
+    const tokensBefore = usageBefore.by_bot[botId]?.total_tokens ?? 0;
+    const first = await chat.handleInbound(request);
+    const usageAfterFirst = await getUsageDayStats(db);
+    const retry = await chat.handleInbound(request);
+    const usageAfterRetry = await getUsageDayStats(db);
+
+    assert.equal(first.kind, "reply");
+    assert.equal(first.qualityPlan?.coveragePercent, 92);
+    assert.equal(first.qualityPlan?.followUpPercent, 100);
+    assert.deepEqual(first.qualityPlan?.lengthWeights, [100, 0, 0]);
+    assert.equal(first.qualityPlan?.repetitionWindowAssistantTurns, 8);
+    assert.equal(first.qualityPlan?.stableTurnKey, retry.qualityPlan?.stableTurnKey);
+    assert.equal(first.qualityPlan?.followUp, retry.qualityPlan?.followUp);
+    assert.equal(first.qualityPlan?.lengthBucket, retry.qualityPlan?.lengthBucket);
+    assert.equal((usageAfterFirst.by_bot[botId]?.requests ?? 0) - requestsBefore, 1);
+    assert.equal((usageAfterFirst.by_bot[botId]?.total_tokens ?? 0) - tokensBefore, 700);
+    assert.equal((usageAfterRetry.by_bot[botId]?.requests ?? 0) - requestsBefore, 2);
+    assert.equal((usageAfterRetry.by_bot[botId]?.total_tokens ?? 0) - tokensBefore, 1400);
+    for (const call of llm.calls) {
+      assert.match((call[0] as { content: string }).content, /回覆覆蓋率：92%/);
+      assert.match((call[0] as { content: string }).content, /整份可見回覆 1–20 字/);
+    }
+  });
+
+  it("keeps an ordinary Chatflow reply when the graph misses its short target", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try { await db.ping(); } catch { t.skip("Redis not available"); return; }
+    const persona = await createPersona(db, {
+      displayName: `chatflow-quality-best-effort-${process.pid}`,
+      systemPrompt: "chatflow persona",
+      ownerUserId: "chatflow_quality_best_effort_owner",
+      visibility: "private",
+      mode: "chatflow",
+      graphJson: {
+        version: 1,
+        nodes: [
+          { id: "start", type: "start" },
+          { id: "llm", type: "llm", data: { system: "custom node" } },
+          { id: "answer", type: "answer", data: { answer: "{{llm.text}}" } },
+        ],
+        edges: [
+          { id: "e1", source: "start", target: "llm" },
+          { id: "e2", source: "llm", target: "answer" },
+        ],
+      },
+    });
+    const botId = `chatflow_quality_best_effort_${process.pid}_${Math.random()}`;
+    const peerId = "chatflow-quality-best-effort@im.wechat";
+    await upsertBotAccount(db, { id: botId, ownerUserId: "chatflow_quality_best_effort_owner", displayName: "chatflow", botToken: "token" });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+    const graphReply = "今天路上的人確實很多但整體秩序還算不錯而且交通流動速度也比預期稍微順暢一些的狀態";
+    assert.equal([...graphReply].length, 40);
+    const chat = new ChatService(db, asLlm(new CapturingLlm([graphReply])), {
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      multiBubbleJson: false,
+      conversationQuality: { followUpPercent: 0, lengthWeights: [100, 0, 0] },
+    });
+
+    const result = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "今天路上很多人",
+      contextToken: "chatflow-best-effort",
+    });
+
+    assert.equal(result.kind, "reply");
+    assert.equal(result.text, graphReply);
+    assert.deepEqual(result.qualityPlan?.protectedTopicIds, []);
+  });
+
   it("inherits persona/global settings when the optional peer overlay is malformed", async (t) => {
     const db = openDatabase(redisUrl);
     t.after(() => db.close());

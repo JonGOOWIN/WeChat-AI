@@ -109,6 +109,16 @@
 - [ ] chatflow 人设不触发主动联系（skip: `chatflow_no_proactive`）
 - [ ] 图校验：无 answer / 多个 start / 超 `CHATFLOW_MAX_NODES` → 400
 
+## K. 对话质量全路径（合并后串行）
+
+- [ ] 后台「对话与回复」修改五组质量参数并保存，重新加载后值不变
+- [ ] Prompt 人设的联系人覆盖留空时逐栏继承；清除后不恢复旧值
+- [ ] Chatflow LLM 节点使用不含 `{{system_prompt}}` 的自定义 system，activity 仍显示有效 profile 与 reason codes
+- [ ] 网页试聊同一人设，activity 只反映全局→人设，不出现联系人覆盖
+- [ ] activity 不出现消息正文、stable turn key、topic ID 或模型密钥
+
+本节必须在浏览器资源可用、功能合并后串行真点；单元测试通过不等于本节已验收。
+
 ## 验收结论
 
 全部关键项（A–D、F–G）通过即可判定：**系统已完成并可验收**。  

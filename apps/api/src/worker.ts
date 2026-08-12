@@ -72,6 +72,7 @@ import {
   type PromptAttachment,
   type ReplyPart,
   planAdaptiveReply,
+  summarizeConversationQualityPlan,
   WeightedReplyCountSelector,
   type ReplyCountSelector,
 } from "@wechat-ai/core";
@@ -2558,6 +2559,15 @@ export class BotWorkerManager {
         batchItems: preparedBatchItems,
         replyPlan,
       });
+      const qualityActivity = result.qualityPlan
+        ? (() => {
+            const summary = summarizeConversationQualityPlan(result.qualityPlan);
+            return {
+              conversationQuality: summary.profile,
+              qualityReasonCodes: summary.reasonCodes,
+            };
+          })()
+        : {};
 
       if (result.kind === "reject" && result.text) {
         await client.sendText({
@@ -2651,6 +2661,7 @@ export class BotWorkerManager {
               coveredItemIds:
                 result.qualityPlan?.coveredTopicIds ?? replyPlan.coveredItemIds,
               omittedTopicIds: result.qualityPlan?.omittedTopicIds ?? [],
+              ...qualityActivity,
               ms: Date.now() - t0,
             }),
           });
@@ -2671,6 +2682,7 @@ export class BotWorkerManager {
               coveredItemIds:
                 result.qualityPlan?.coveredTopicIds ?? replyPlan.coveredItemIds,
               omittedTopicIds: result.qualityPlan?.omittedTopicIds ?? [],
+              ...qualityActivity,
               ms: Date.now() - t0,
               parts: parts.length,
             },
@@ -2687,6 +2699,7 @@ export class BotWorkerManager {
           peerId: job.peerId,
           jobId: job.id,
           kind: result.kind,
+          ...qualityActivity,
           ms: Date.now() - t0,
         },
       });

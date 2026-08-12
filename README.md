@@ -96,6 +96,7 @@ Each server runs the **same image**, shares one Upstash Redis; users only visit 
 | [cloudflare-worker/README.md](cloudflare-worker/README.md) | CF Worker 多源站 LB |
 | [docs/ai-gateway.md](docs/ai-gateway.md) | AI 网关（主站 ↔ HF）AI gateway |
 | [docs/chatflow.md](docs/chatflow.md) | Chatflow 编排 |
+| [docs/conversation-quality.md](docs/conversation-quality.md) | 對話品質優先級、校準與限制 |
 | [docs/admin-api.md](docs/admin-api.md) | 管理 API |
 | [docs/runbook.md](docs/runbook.md) | 运维手册 Ops runbook |
 | [docs/e2e-checklist.md](docs/e2e-checklist.md) | 真机验收清单 E2E checklist |

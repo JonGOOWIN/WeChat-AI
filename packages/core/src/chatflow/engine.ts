@@ -23,6 +23,7 @@ import {
   blockedResolvedReason,
   normalizeHost,
 } from "./http-guard.js";
+import { buildConversationQualityBlock } from "../prompt.js";
 
 /** Wall clock for one http node. Tools gateway calls are the only sanctioned target. */
 const HTTP_NODE_TIMEOUT_MS = Number(
@@ -317,7 +318,7 @@ export class ChatflowEngine {
       }
 
       if (node.type === "llm") {
-        const system = renderTemplate(
+        const nodeSystem = renderTemplate(
           String(
             (node.data?.system as string) ||
               (node.data?.system_prompt as string) ||
@@ -325,6 +326,14 @@ export class ChatflowEngine {
           ),
           vars,
         );
+        const system = [
+          nodeSystem,
+          input.qualityPlan
+            ? buildConversationQualityBlock(input.qualityPlan)
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
         const prompt = renderTemplate(
           String(
             (node.data?.prompt as string) ||

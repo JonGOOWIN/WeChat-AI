@@ -56,6 +56,70 @@ function asLlm(fake: CapturingLlm): LlmClient {
 }
 
 describe("ChatService global conversation quality (Redis)", () => {
+  it("applies global, persona and peer quality to Chatflow and keeps retry decisions stable", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try { await db.ping(); } catch { t.skip("Redis not available"); return; }
+    const persona = await createPersona(db, {
+      displayName: `chatflow-quality-${process.pid}`,
+      systemPrompt: "chatflow persona",
+      ownerUserId: "chatflow_quality_owner",
+      visibility: "private",
+      mode: "chatflow",
+      graphJson: {
+        version: 1,
+        nodes: [
+          { id: "start", type: "start" },
+          { id: "llm", type: "llm", data: { system: "custom node system" } },
+          { id: "answer", type: "answer", data: { answer: "{{llm.text}}" } },
+        ],
+        edges: [
+          { id: "e1", source: "start", target: "llm" },
+          { id: "e2", source: "llm", target: "answer" },
+        ],
+      },
+      conversationQuality: { coveragePercent: 45, followUpPercent: 100 },
+    });
+    const botId = `chatflow_quality_${process.pid}_${Math.random()}`;
+    const peerId = "chatflow-quality@im.wechat";
+    await upsertBotAccount(db, { id: botId, ownerUserId: "chatflow_quality_owner", displayName: "chatflow", botToken: "token" });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+    await setPeerConversationQuality(db, botId, peerId, {
+      coveragePercent: 92,
+      lengthWeights: [100, 0, 0],
+    });
+    const llm = new CapturingLlm(['{"messages":["收到"]}', '{"messages":["收到"]}']);
+    const chat = new ChatService(db, asLlm(llm), {
+      stickersEnabled: false,
+      memoryExtractEveryN: 999,
+      conversationQuality: { coveragePercent: 70, repetitionWindowAssistantTurns: 8 },
+    });
+    const request = {
+      botAccountId: botId,
+      peerId,
+      text: "請確認時間？",
+      contextToken: "stable-chatflow-turn",
+    };
+
+    const first = await chat.handleInbound(request);
+    const retry = await chat.handleInbound(request);
+
+    assert.equal(first.kind, "reply");
+    assert.equal(first.qualityPlan?.coveragePercent, 92);
+    assert.equal(first.qualityPlan?.followUpPercent, 100);
+    assert.deepEqual(first.qualityPlan?.lengthWeights, [100, 0, 0]);
+    assert.equal(first.qualityPlan?.repetitionWindowAssistantTurns, 8);
+    assert.equal(first.qualityPlan?.stableTurnKey, retry.qualityPlan?.stableTurnKey);
+    assert.equal(first.qualityPlan?.followUp, retry.qualityPlan?.followUp);
+    assert.equal(first.qualityPlan?.lengthBucket, retry.qualityPlan?.lengthBucket);
+    for (const call of llm.calls) {
+      assert.match((call[0] as { content: string }).content, /回覆覆蓋率：92%/);
+      assert.match((call[0] as { content: string }).content, /整份可見回覆 1–20 字/);
+    }
+  });
+
   it("inherits persona/global settings when the optional peer overlay is malformed", async (t) => {
     const db = openDatabase(redisUrl);
     t.after(() => db.close());

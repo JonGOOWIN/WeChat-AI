@@ -4,6 +4,7 @@ import {
   inspectConversationQuality,
   planConversationQuality,
   resolveConversationQualitySettings,
+  summarizeConversationQualityPlan,
 } from "./conversation-quality.js";
 
 const settings = resolveConversationQualitySettings({
@@ -65,5 +66,31 @@ describe("conversation question intent", () => {
         visibleText,
       );
     }
+  });
+});
+
+describe("conversation quality runtime summary", () => {
+  it("exposes the selected profile and reason codes without turn content or identifiers", () => {
+    const plan = planConversationQuality({
+      stableTurnKey: "secret-peer-and-turn",
+      topics: [{ id: "private-topic-id", text: "請幫我確認時間？" }],
+      settings,
+    });
+    const summary = summarizeConversationQualityPlan(plan);
+
+    assert.deepEqual(summary.profile, {
+      coveragePercent: 100,
+      followUpPercent: 0,
+      lengthWeights: [0, 100, 0],
+      emotionContinuityTurns: 4,
+      repetitionWindowAssistantTurns: 0,
+    });
+    assert.deepEqual(summary.reasonCodes, [
+      "protected-obligation",
+      "coverage-complete",
+      "follow-up-not-selected",
+      "length-normal",
+    ]);
+    assert.doesNotMatch(JSON.stringify(summary), /secret-peer|private-topic/);
   });
 });

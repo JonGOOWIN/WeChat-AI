@@ -620,18 +620,15 @@ export class ChatService {
     }
 
     // Peer settings live outside Peer JSON so activity/proactive RMWs cannot
-    // overwrite them. Chatflow remains outside RULE-002 peer overrides.
-    const peerQuality =
-      persona.mode === "chatflow"
-        ? {}
-        : await getPeerConversationQuality(
-            this.db,
-            req.botAccountId,
-            req.peerId,
-          );
+    // overwrite them. RULE-002 applies to every normal inbound AI mode.
+    const peerQuality = await getPeerConversationQuality(
+      this.db,
+      req.botAccountId,
+      req.peerId,
+    );
     const qualitySettings = resolveConversationQualitySettings({
       ...this.opts.conversationQuality,
-      ...(persona.mode === "chatflow" ? {} : persona.conversation_quality),
+      ...persona.conversation_quality,
       ...peerQuality,
     });
     const qualityHistoryLimit = Math.min(
@@ -777,6 +774,35 @@ export class ChatService {
     let qualityClient: LlmClient | undefined;
     let qualityCallOpts: ChatCallOptions | undefined;
 
+    const qualityTopics = batchItems?.length
+      ? batchItems.map((item) => {
+          const adaptiveItem = req.replyPlan?.items.find(
+            (planned) => planned.id === item.id,
+          );
+          return {
+            id: item.id,
+            text: item.text,
+            hasAttachments: item.attachments.length > 0,
+            replyObligation: adaptiveItem?.replyObligation,
+            protectedObligation:
+              adaptiveItem?.kind === "new-question-or-request" ||
+              adaptiveItem?.kind === "emotional-bid" ||
+              adaptiveItem?.kind === "correction",
+          };
+        })
+      : [{ id: "turn", text: req.text, hasAttachments: attachments.length > 0 }];
+    const stableTurnKey = [
+      req.botAccountId,
+      req.peerId,
+      ...(batchItems?.length ? [] : [req.contextToken]),
+      ...qualityTopics.map((topic) => `${topic.id}:${topic.text}`),
+    ].join("\u0000");
+    qualityPlan = planConversationQuality({
+      stableTurnKey,
+      topics: qualityTopics,
+      settings: qualitySettings,
+    });
+
     if (persona.mode === "chatflow") {
       // Chatflow MVP: proactive path still uses prompt mode elsewhere;
       // inbound uses graph. Disable proactive separately at scheduler.
@@ -807,39 +833,12 @@ export class ChatService {
         memories: selectedMemories.map((m) => m.content),
         webSearchEnabled: Boolean(persona.web_search_enabled),
         upstream,
+        qualityPlan,
       });
       rawLlmText = cf.text;
       promptTokens = cf.promptTokens;
       completionTokens = cf.completionTokens;
     } else {
-      const qualityTopics = batchItems?.length
-        ? batchItems.map((item) => {
-            const adaptiveItem = req.replyPlan?.items.find(
-              (planned) => planned.id === item.id,
-            );
-            return {
-              id: item.id,
-              text: item.text,
-              hasAttachments: item.attachments.length > 0,
-              replyObligation: adaptiveItem?.replyObligation,
-              protectedObligation:
-                adaptiveItem?.kind === "new-question-or-request" ||
-                adaptiveItem?.kind === "emotional-bid" ||
-                adaptiveItem?.kind === "correction",
-            };
-          })
-        : [{ id: "turn", text: req.text, hasAttachments: attachments.length > 0 }];
-      const stableTurnKey = [
-        req.botAccountId,
-        req.peerId,
-        ...(batchItems?.length ? [] : [req.contextToken]),
-        ...qualityTopics.map((topic) => `${topic.id}:${topic.text}`),
-      ].join("\u0000");
-      const conversationQualityPlan = planConversationQuality({
-        stableTurnKey,
-        topics: qualityTopics,
-        settings: qualitySettings,
-      });
       const messages = buildChatMessages({
         systemPrompt,
         memories: selectedMemories,
@@ -858,7 +857,7 @@ export class ChatService {
                 coveredItemIds: req.replyPlan.coveredItemIds,
               }
             : undefined,
-        conversationQualityPlan,
+        conversationQualityPlan: qualityPlan,
       });
 
       const { client: chatClient, callOpts } = await this.resolveChatClient({
@@ -871,7 +870,6 @@ export class ChatService {
       if (visionModel && attachments.some((a) => a.dataUri)) {
         callOpts.model = visionModel;
       }
-      qualityPlan = conversationQualityPlan;
       qualityMessages = messages;
       qualityClient = chatClient;
       qualityCallOpts = callOpts;

@@ -24,6 +24,12 @@ import {
   type ReplyPart,
 } from "./reply-format.js";
 import { ReplyFilter } from "./reply-filter.js";
+import {
+  planConversationQuality,
+  resolveConversationQualitySettings,
+  type ConversationQualityPlan,
+  type ConversationQualitySettings,
+} from "./conversation-quality.js";
 
 export interface TryChatServiceOptions {
   sessionTtlSec: number;
@@ -54,6 +60,8 @@ export interface TryChatServiceOptions {
   chatflowHttpAllowHosts?: string[];
   chatflowMaxSteps?: number;
   chatflowMaxNodes?: number;
+  /** Global RULE-002 defaults; persona fields override these one by one. */
+  conversationQuality?: Partial<ConversationQualitySettings>;
 }
 
 export interface StartTrySessionInput {
@@ -88,6 +96,8 @@ export interface SendTryMessageResult {
   };
   remainingToday: number;
   remainingSession: number;
+  /** Effective deterministic plan (global → persona; try-chat has no peer). */
+  qualityPlan: ConversationQualityPlan;
 }
 
 export class TryChatError extends Error {
@@ -154,7 +164,15 @@ export class TryChatService {
    * Only the keys present in `patch` are touched.
    */
   applyRuntimeOptions(patch: Partial<TryChatServiceOptions>): void {
+    const qualityPatch = patch.conversationQuality;
+    const previousQuality = this.opts.conversationQuality;
     Object.assign(this.opts, patch);
+    if (qualityPatch !== undefined) {
+      this.opts.conversationQuality = {
+        ...previousQuality,
+        ...qualityPatch,
+      };
+    }
     if ("replyFilterEnabled" in patch) {
       this.replyFilter.setEnabled(this.opts.replyFilterEnabled === true);
     }
@@ -302,6 +320,17 @@ export class TryChatService {
       context_token: null,
       created_at: new Date().toISOString(),
     }));
+    const qualitySettings = resolveConversationQualitySettings({
+      ...this.opts.conversationQuality,
+      ...persona.conversation_quality,
+    });
+    const qualityPlan = planConversationQuality({
+      // A retry may create a fresh preview session. Persona + exact turn text
+      // preserves the probabilistic choices without inventing a peer identity.
+      stableTurnKey: [persona.id, text].join("\u0000"),
+      topics: [{ id: "turn", text }],
+      settings: qualitySettings,
+    });
 
     let usage: {
       text: string;
@@ -324,6 +353,7 @@ export class TryChatService {
           memories: [],
           webSearchEnabled: Boolean(persona.web_search_enabled),
           upstream: null,
+          qualityPlan,
         });
         usage = {
           text: cf.text,
@@ -344,6 +374,7 @@ export class TryChatService {
         multiBubbleJson: this.primaryMultiBubbleJson(),
         stickers: [],
         timeToolEnabled: this.opts.timeToolEnabled !== false,
+        conversationQualityPlan: qualityPlan,
       });
 
       try {
@@ -473,6 +504,7 @@ export class TryChatService {
         0,
         this.opts.maxUserMsgsPerSession - session.msgCount,
       ),
+      qualityPlan,
     };
   }
 

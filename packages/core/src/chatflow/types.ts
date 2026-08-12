@@ -1,5 +1,7 @@
 /** Chatflow graph types (Dify-like MVP). */
 
+import type { ConversationQualityPlan } from "../conversation-quality.js";
+
 export type ChatflowNodeType =
   | "start"
   | "llm"
@@ -39,6 +41,8 @@ export interface ChatflowRunInput {
   history: Array<{ role: string; content: string }>;
   /** Memory facts already selected for this turn */
   memories: string[];
+  /** Effective RULE-002 plan. Appended to every LLM node system prompt. */
+  qualityPlan?: ConversationQualityPlan;
   /**
    * When true, persona allows search nodes / search tools.
    * Still requires global webSearch + tools gateway on engine deps.

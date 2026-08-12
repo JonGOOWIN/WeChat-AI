@@ -33,6 +33,12 @@
 网页试聊支持 chatflow 人设：执行同一张已发布的图，但 **强制平台上游**（`upstream: null`），
 避免消耗或泄露作者的自定义模型额度。
 
+## 對話品質
+
+每個 LLM 節點都會附加本輪有效的 RULE-002 品質區塊，自訂 system prompt 不能略過它。
+正式微信採全域→人設→聯絡人；試聊沒有聯絡人層，只採全域→人設。詳見
+`docs/conversation-quality.md`。
+
 ## 限制（MVP）
 
 - Chatflow 人设 **禁用主动联系**（`skipReason: chatflow_no_proactive`）

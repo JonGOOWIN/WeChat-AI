@@ -11,12 +11,20 @@
     "db:migrate": "pnpm db:seed",
     "diag": "pnpm --filter @wechat-ai/api diag",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r run test && pnpm run test:lint-contract",
+    "test:lint-contract": "node --test scripts/lint-contract.test.mjs",
+    "lint": "eslint .",
     "release:pack": "node scripts/release-pack.mjs",
     "docker:build": "node scripts/docker-build.mjs",
     "docker:up": "node scripts/docker-build.mjs --up"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
+    "typescript-eslint": "^8.67.0"
   }
 }

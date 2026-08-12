@@ -69,7 +69,7 @@ const DEFAULTS: P2PServiceOptions = {
 };
 
 /** Whole-message @username (optional leading/trailing whitespace). */
-const AT_USER_RE = /^\s*@([A-Za-z0-9_.\-]{1,64})\s*$/;
+const AT_USER_RE = /^\s*@([A-Za-z0-9_.-]{1,64})\s*$/;
 
 const BIND_RE = /^\s*\/绑定\s+([A-Za-z0-9]{4,12})\s*$/i;
 const UNBIND_RE = /^\s*\/解绑\s*$/;
@@ -78,8 +78,8 @@ const ACCEPT_RE = /^\s*\/同意\s*$/;
 const REJECT_RE = /^\s*\/拒绝\s*$/;
 const DISCONNECT_RE = /^\s*\/断开\s*$/;
 const CANCEL_RE = /^\s*\/取消请求\s*$/;
-const BLOCK_RE = /^\s*\/拉黑\s+@?([A-Za-z0-9_.\-]{1,64})\s*$/;
-const UNBLOCK_RE = /^\s*\/取消拉黑\s+@?([A-Za-z0-9_.\-]{1,64})\s*$/;
+const BLOCK_RE = /^\s*\/拉黑\s+@?([A-Za-z0-9_.-]{1,64})\s*$/;
+const UNBLOCK_RE = /^\s*\/取消拉黑\s+@?([A-Za-z0-9_.-]{1,64})\s*$/;
 const BLOCKLIST_RE = /^\s*\/黑名单\s*$/;
 
 function localOnly(text: string): P2PHandleResult {

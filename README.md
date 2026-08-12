@@ -49,7 +49,11 @@ Browser ──► main domain CF Worker LB ──► Node-1…N (same image, sha
 
 ### 本地开发 Local Development
 
+开发与质量检查需要 Node.js 20.9 以上，并使用仓库锁定的 pnpm 11.15.0（`corepack enable` 会启用它）。
+Development and quality checks require Node.js 20.9+ and the repository-pinned pnpm 11.15.0 (`corepack enable`).
+
 ```bash
+corepack enable
 pnpm install
 cp .env.example .env
 # 必填 Required: REDIS_URL（Upstash 用 rediss://）、LLM_API_KEY（平台）、LINUXDO_* 、LINUXDO_ADMIN_IDS
@@ -59,6 +63,18 @@ pnpm db:seed
 pnpm diag
 pnpm dev
 ```
+
+提交前执行完整本地门禁 / Run the complete local gate before committing:
+
+```bash
+npm run lint
+npm test
+npm run typecheck
+npm run build
+```
+
+Lint 会检查 workspace 的 TypeScript 源码与测试、Cloudflare Worker TypeScript 源码及仓库脚本。`dist`、`build`、`coverage`、依赖、Wrangler 输出、静态浏览器页面、手动打包的 `cloudflare-worker/worker.js` 与测试 fixture 会明确排除。
+Lint covers workspace TypeScript source/tests, Cloudflare Worker TypeScript source, and repository scripts. Generated/build output, dependencies, Wrangler output, static browser pages, the manually bundled `cloudflare-worker/worker.js`, and test fixtures are intentionally excluded.
 
 页面 / Pages：
 

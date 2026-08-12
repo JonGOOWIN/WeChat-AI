@@ -41,7 +41,7 @@ describe("Admin conversation settings document", () => {
     );
 
     const body = html.match(
-      /function settingsConversationSummary\(stage\) \{([\s\S]*?)\n    \}\n\n    function settingsRefreshConversationSummaries/,
+      /function settingsConversationSummary\(stage\) \{([\s\S]*?)\n {4}\}\n\n {4}function settingsRefreshConversationSummaries/,
     )?.[1];
     assert.ok(body, "summary function is available at the public UI seam");
     const items = [50, 30, 15, 5].map((value, index) => ({
@@ -63,7 +63,7 @@ describe("Admin conversation settings document", () => {
     assert.match(summarize("reply"), /条数 100%/);
 
     const onChangeBody = html.match(
-      /const onChange = \(\) => \{([\s\S]*?)\n        \};\n        el\.onchange = onChange;/,
+      /const onChange = \(\) => \{([\s\S]*?)\n {8}\};\n {8}el\.onchange = onChange;/,
     )?.[1];
     assert.ok(onChangeBody, "numeric input handler is available at the public UI seam");
     const el = { value: "51", checked: false };

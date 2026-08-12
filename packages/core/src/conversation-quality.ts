@@ -213,17 +213,25 @@ function countQuestionIntents(value: string): number {
 function containsQuestionIntent(value: string): boolean {
   const text = stripUrls(value).trim();
   if (/[?？]/u.test(text)) return true;
-  if (/[嗎吗麼么]\s*[啊呀嘛吧]?\s*[.!！。…~～]*$/u.test(text)) return true;
+  if (/[嗎吗]\s*[啊呀嘛吧]?\s*[.!！。…~～]*$/u.test(text)) return true;
+  if (
+    /(?:你)?在(?:做(?:什麼|什么)|幹嘛|干嘛)\s*[.!！。…~～]*$/u.test(text)
+  ) {
+    return true;
+  }
   return /(?:你|那你|所以|然後|然后|怎麼|怎么|為什麼|为什么|哪裡|哪里|在|有空|方便|可以|行|好|對|对|是|要|能|會|会|知道|明白|看見|看见|收到)呢\s*[.!！。…~～]*$/u.test(
     text,
   );
 }
 
 function stripUrls(value: string): string {
-  // Keep adjacent CJK text: a URL query may be followed immediately by a
-  // real modal-ending question. Model URLs are expected to be ASCII or
-  // percent-encoded, so a non-ASCII code point ends the URL.
-  return value.replace(/https?:\/\/[\x21-\x7e]+/giu, "");
+  // Keep adjacent CJK text: URL bodies are ASCII or percent-encoded, so a
+  // non-ASCII code point ends the URL. Bare domains are limited to common
+  // public TLDs so ordinary dotted prose is not swallowed as a URL.
+  return value.replace(
+    /(?:https?:\/\/|www\.)[\x21-\x7e]+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|org|net|edu|gov|io|ai|co|cn|tw|hk|jp|kr|uk|de|fr|app|dev|me|info|biz|xyz)(?::\d{1,5})?(?:\/[\x21-\x7e]*)?(?:\?[\x21-\x7e]*)?/giu,
+    "",
+  );
 }
 
 function isReplyObligation(text: string, hasAttachments: boolean): boolean {

@@ -1,3 +1,6 @@
+/** Redis key segment for opaque external ids. Base64url avoids delimiter collisions. */
+const opaqueKeyPart = (value: string) => Buffer.from(value, "utf8").toString("base64url");
+
 export const K = {
   user: (id: string) => `wa:user:${id}`,
   usersAll: "wa:users:all",
@@ -39,6 +42,9 @@ export const K = {
   personaVersions: (personaId: string) => `wa:persona:${personaId}:versions`,
 
   peer: (botId: string, peerId: string) => `wa:peer:${botId}:${peerId}`,
+  /** RULE-002 partial override; deliberately separate from mutable Peer JSON. */
+  peerQuality: (botId: string, peerId: string) =>
+    `wa:peer-quality:${opaqueKeyPart(botId)}:${opaqueKeyPart(peerId)}`,
   peersByBot: (botId: string) => `wa:peers:bot:${botId}`,
   peersAll: "wa:peers:all",
 

@@ -4,6 +4,7 @@ import {
   clearMemories,
   ensurePeer,
   getBotAccount,
+  getPeerConversationQuality,
   getPublishedGraph,
   getPublishedPrompt,
   getUser,
@@ -618,12 +619,21 @@ export class ChatService {
       return { kind: "reject", text: this.opts.noPersonaReply };
     }
 
-    const qualitySettings = resolveConversationQualitySettings(
-      {
-        ...this.opts.conversationQuality,
-        ...(persona.mode === "chatflow" ? {} : persona.conversation_quality),
-      },
-    );
+    // Peer settings live outside Peer JSON so activity/proactive RMWs cannot
+    // overwrite them. Chatflow remains outside RULE-002 peer overrides.
+    const peerQuality =
+      persona.mode === "chatflow"
+        ? {}
+        : await getPeerConversationQuality(
+            this.db,
+            req.botAccountId,
+            req.peerId,
+          );
+    const qualitySettings = resolveConversationQualitySettings({
+      ...this.opts.conversationQuality,
+      ...(persona.mode === "chatflow" ? {} : persona.conversation_quality),
+      ...peerQuality,
+    });
     const qualityHistoryLimit = Math.min(
       this.opts.historySafetyCap ?? 100,
       Math.max(

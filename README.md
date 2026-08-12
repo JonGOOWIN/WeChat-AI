@@ -20,7 +20,7 @@ Connects directly to Tencent **iLink**, stores data in **remote Redis**, and aut
 | 中文 | English |
 |------|---------|
 | LINUX DO OAuth 登录（用户 / 管理员） | LINUX DO OAuth login (user / admin) |
-| 用户中心：扫码添加/删除微信机器人、批准私聊用户、分配人设 | User center: scan-QR add/remove WeChat bots, approve chat peers, assign personas |
+| 用户中心：扫码添加/删除微信机器人、批准私聊用户、分配人设，并为单个联络人调整对话风格 | User center: scan-QR add/remove WeChat bots, approve chat peers, assign personas, and tune conversation style per contact |
 | 用户对话：绑定 LINUX DO 后微信内 `@用户名` 请求对话，对方 `/同意` 后双向中继 | P2P chat: after binding, `@username` in WeChat to request a chat, peer replies `/agree` to relay messages both ways |
 | 管理后台：数据面板、Token 用量、用户与机器人、部署节点、表情包审核 | Admin dashboard: stats, token usage, users & bots, deploy nodes, sticker moderation |
 | 表情包广场：投稿 / 我的库 / 公开需审核；恶意图过滤 | Sticker square: submit / my library / public needs review; malicious-image filtering |

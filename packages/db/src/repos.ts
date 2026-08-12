@@ -185,6 +185,9 @@ export type PersonaConversationQualityPatch = {
   [K in keyof PersonaConversationQuality]?: PersonaConversationQuality[K] | null;
 };
 
+export type PeerConversationQuality = PersonaConversationQuality;
+export type PeerConversationQualityPatch = PersonaConversationQualityPatch;
+
 export interface Persona {
   id: string;
   slug: string;
@@ -959,7 +962,12 @@ export async function deleteBotAccount(
   // clean peers/messages indexes lightly
   const peerKeys = await db.redis.smembers(K.peersByBot(botId));
   for (const pk of peerKeys) {
-    await db.del(K.peer(botId, pk), K.assignment(botId, pk), K.messages(botId, pk));
+    await db.del(
+      K.peer(botId, pk),
+      K.peerQuality(botId, pk),
+      K.assignment(botId, pk),
+      K.messages(botId, pk),
+    );
   }
   await db.del(K.peersByBot(botId), K.proactivePeersByBot(botId));
   return true;
@@ -2194,6 +2202,102 @@ export async function setPeerProactiveEnabled(
   return peer;
 }
 
+/** Read a RULE-002 peer override from its dedicated bot+peer key. */
+function normalizeStoredPeerConversationQuality(
+  input: unknown,
+): PeerConversationQuality {
+  try {
+    return validatePersonaConversationQualityPatch(
+      input as PeerConversationQualityPatch,
+    );
+  } catch {
+    // This key is an optional overlay. A syntactically valid but contract-invalid
+    // stored document must not take ordinary chat or peer listing down.
+    return {};
+  }
+}
+
+export async function getPeerConversationQuality(
+  db: RedisStore,
+  botAccountId: string,
+  peerId: string,
+): Promise<PeerConversationQuality> {
+  try {
+    const stored = await db.getJson<unknown>(K.peerQuality(botAccountId, peerId));
+    return normalizeStoredPeerConversationQuality(stored);
+  } catch (error) {
+    // getJson also performs JSON.parse. Only malformed optional JSON inherits;
+    // connection/auth/timeouts remain visible and fail closed.
+    if (error instanceof SyntaxError) return {};
+    throw error;
+  }
+}
+
+/**
+ * Merge a partial peer patch. Explicit null clears one field; an empty result
+ * deletes the dedicated key. The Peer JSON is never read or written here.
+ */
+export async function setPeerConversationQuality(
+  db: RedisStore,
+  botAccountId: string,
+  peerId: string,
+  patch: PeerConversationQualityPatch | null,
+): Promise<PeerConversationQuality> {
+  const validated = validatePersonaConversationQualityPatch(patch);
+  const patchKeys = patch === null ? [] : Object.keys(patch);
+  const clearsWholeOverlay =
+    patch === null ||
+    patchKeys.length === 0 ||
+    PERSONA_QUALITY_KEYS.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(patch, key) && patch[key] == null,
+    );
+  const storageKey = K.peerQuality(botAccountId, peerId);
+  if (clearsWholeOverlay) {
+    await db.del(storageKey);
+    return {};
+  }
+  const next: PeerConversationQuality = {
+    ...(await getPeerConversationQuality(db, botAccountId, peerId)),
+  };
+  if (patch !== null) {
+    for (const key of PERSONA_QUALITY_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+      if (patch[key] == null) delete next[key];
+      else Object.assign(next, { [key]: validated[key] });
+    }
+  }
+  if (Object.keys(next).length) await db.setJson(storageKey, next);
+  else await db.del(storageKey);
+  return { ...next };
+}
+
+type PeerWithConversationQuality = Peer & {
+  conversation_quality?: PeerConversationQuality;
+};
+
+async function readPeersWithQuality(
+  db: RedisStore,
+  peerKeys: string[],
+  qualityKeys: string[],
+): Promise<PeerWithConversationQuality[]> {
+  const count = peerKeys.length;
+  const rows = await db.mgetJson<Peer | PeerConversationQuality>([
+    ...peerKeys,
+    ...qualityKeys,
+  ]);
+  return rows.slice(0, count).flatMap((row, index) => {
+    if (!row || !("peer_id" in row)) return [];
+    const quality = normalizeStoredPeerConversationQuality(rows[count + index]);
+    return [{
+      ...row,
+      ...(quality && Object.keys(quality).length
+        ? { conversation_quality: { ...quality } }
+        : {}),
+    }];
+  });
+}
+
 export async function listProactivePeerIds(
   db: RedisStore,
   botAccountId: string,
@@ -2284,28 +2388,30 @@ export async function markPeerProactive(
 export async function listPeers(
   db: RedisStore,
   botAccountId?: string,
-): Promise<Peer[]> {
+): Promise<PeerWithConversationQuality[]> {
   if (botAccountId) {
     const ids = (await db.redis.smembers(
       K.peersByBot(botAccountId),
     )) as string[];
     if (!ids.length) return [];
-    const rows = await db.mgetJson<Peer>(
+    return readPeersWithQuality(
+      db,
       ids.map((pid: string) => K.peer(botAccountId, pid)),
+      ids.map((pid: string) => K.peerQuality(botAccountId, pid)),
     );
-    return rows.filter((p): p is Peer => Boolean(p));
   }
   const pairs = (await db.redis.smembers(K.peersAll)) as string[];
   if (!pairs.length) return [];
   const keys: string[] = [];
+  const qualityKeys: string[] = [];
   for (const pair of pairs) {
     const [botId, peerId] = pair.split("|");
     if (!botId || !peerId) continue;
     keys.push(K.peer(botId, peerId));
+    qualityKeys.push(K.peerQuality(botId, peerId));
   }
   if (!keys.length) return [];
-  const rows = await db.mgetJson<Peer>(keys);
-  return rows.filter((p): p is Peer => Boolean(p));
+  return readPeersWithQuality(db, keys, qualityKeys);
 }
 
 /**
@@ -2315,21 +2421,22 @@ export async function listPeers(
 export async function listPeersForBots(
   db: RedisStore,
   botIds: string[],
-): Promise<Peer[]> {
+): Promise<PeerWithConversationQuality[]> {
   const uniq = [...new Set(botIds.filter(Boolean))];
   if (!uniq.length) return [];
   const peerIdLists = await db.smembersMany(
     uniq.map((id) => K.peersByBot(id)),
   );
   const keys: string[] = [];
+  const qualityKeys: string[] = [];
   uniq.forEach((botId, i) => {
     for (const pid of peerIdLists[i] ?? []) {
       keys.push(K.peer(botId, pid));
+      qualityKeys.push(K.peerQuality(botId, pid));
     }
   });
   if (!keys.length) return [];
-  const rows = await db.mgetJson<Peer>(keys);
-  return rows.filter((p): p is Peer => Boolean(p));
+  return readPeersWithQuality(db, keys, qualityKeys);
 }
 
 /**

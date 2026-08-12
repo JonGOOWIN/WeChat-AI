@@ -3243,6 +3243,26 @@
   </div>
 
   <!-- 主动联系设置弹窗 -->
+  <div class="modal-backdrop" id="peerQualityModal" role="dialog" aria-modal="true" aria-labelledby="peerQualityTitle">
+    <div class="modal glass glass-strong glass-rim" style="width:min(620px,100%)">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <h3 id="peerQualityTitle" style="margin:0 0 4px">联络人对话风格</h3>
+      <p class="desc" id="peerQualitySub" style="margin:0 0 14px">只调整这个联络人的一般 AI 对话</p>
+      <p class="editor-help">每项可单独覆盖；勾选「继承人设与全局」会跟随上层设置。长度比例作为一组保存，三项须合计 100。</p>
+      <div class="quality-grid">
+        <div class="quality-control"><div class="row"><span class="field-label">话题覆盖率 (%)</span><label class="quality-inherit"><input type="checkbox" id="peerQCoverageInherit" checked />继承人设与全局</label></div><input type="number" id="peerQCoverage" min="0" max="100" step="1" disabled /></div>
+        <div class="quality-control"><div class="row"><span class="field-label">自然追问倾向 (%)</span><label class="quality-inherit"><input type="checkbox" id="peerQFollowUpInherit" checked />继承人设与全局</label></div><input type="number" id="peerQFollowUp" min="0" max="100" step="1" disabled /></div>
+        <div class="quality-control quality-length" id="peerQLength"><div class="row"><span class="field-label">短 / 普通 / 长回答比例 (%)</span><label class="quality-inherit"><input type="checkbox" id="peerQLengthInherit" checked />继承人设与全局</label></div><div class="quality-length-inputs"><input type="number" id="peerQLengthShort" min="0" max="100" step="1" placeholder="短" disabled /><input type="number" id="peerQLengthNormal" min="0" max="100" step="1" placeholder="普通" disabled /><input type="number" id="peerQLengthLong" min="0" max="100" step="1" placeholder="长" disabled /></div></div>
+        <div class="quality-control"><div class="row"><span class="field-label">情绪延续轮数</span><label class="quality-inherit"><input type="checkbox" id="peerQEmotionInherit" checked />继承人设与全局</label></div><input type="number" id="peerQEmotion" min="0" max="20" step="1" disabled /></div>
+        <div class="quality-control"><div class="row"><span class="field-label">重复检查轮数</span><label class="quality-inherit"><input type="checkbox" id="peerQRepetitionInherit" checked />继承人设与全局</label></div><input type="number" id="peerQRepetition" min="0" max="50" step="1" disabled /></div>
+      </div>
+      <div class="row-actions" style="margin-top:16px;justify-content:flex-end">
+        <button class="btn btn-secondary" type="button" id="peerQualityCancel">取消</button>
+        <button class="btn btn-primary" type="button" id="peerQualitySave"><i class="bi bi-check-lg" aria-hidden="true"></i>保存对话风格</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="proactiveModal" role="dialog" aria-modal="true" aria-labelledby="proModalTitle">
     <div class="modal glass glass-strong glass-rim" style="width:min(440px,100%)">
       <div class="modal-handle" aria-hidden="true"></div>
@@ -3284,6 +3304,7 @@
       loginSessionId: null,
       timer: null,
       editingPersonaId: null,
+      peers: [],
       squarePage: 1,
       stickerPage: 1,
     };
@@ -4526,10 +4547,77 @@
             : `<button class="btn btn-primary btn-sm" type="button" data-ap="${esc(key)}">批准</button>`
         }
         <button class="btn btn-secondary btn-sm" type="button" data-as="${esc(key)}">分配人设</button>
+        <button class="btn btn-secondary btn-sm" type="button" data-peer-quality-bot="${esc(p.bot_account_id)}" data-peer-quality-peer="${esc(p.peer_id)}">对话风格</button>
         <button class="btn btn-ghost btn-sm" type="button" data-mem="${esc(key)}">记忆</button>
       </div>`;
     }
+
+    let _peerQualityTarget = null;
+    function normalizePeerConversationQuality(quality) {
+      const input = quality || {};
+      const next = {};
+      ["coveragePercent", "followUpPercent", "emotionContinuityTurns", "repetitionWindowAssistantTurns"].forEach((key) => {
+        if (input[key] != null) next[key] = input[key];
+      });
+      if (input.lengthWeights != null) next.lengthWeights = [...input.lengthWeights];
+      return next;
+    }
+    function closePeerQualityModal() {
+      $("peerQualityModal")?.classList.remove("show");
+      document.body.style.overflow = "";
+      _peerQualityTarget = null;
+    }
+    function openPeerQualityModal(botAccountId, peerId) {
+      const peer = state.peers.find(
+        (item) => item.bot_account_id === botAccountId && item.peer_id === peerId,
+      );
+      if (!peer) return toast("联络人不存在", true);
+      _peerQualityTarget = { botAccountId, peerId };
+      $("peerQualitySub").textContent = `${peer.display_name || peerId} · ${peer.personaName || "默认人设"}`;
+      setPersonaQualityControls("peerQ", peer.conversationQuality || {});
+      $("peerQualityModal").classList.add("show");
+      document.body.style.overflow = "hidden";
+      setTimeout(() => $("peerQCoverageInherit")?.focus({ preventScroll: true }), 30);
+    }
+    async function persistPeerQualitySave(botAccountId, peerId, submittedQuality) {
+      const response = await api("/api/v1/me/peers/quality", {
+        method: "PATCH",
+        body: { botAccountId, peerId, conversationQuality: submittedQuality },
+      });
+      const next = normalizePeerConversationQuality(
+        response?.conversationQuality ?? submittedQuality,
+      );
+      const cached = state.peers.find(
+        (item) => item.bot_account_id === botAccountId && item.peer_id === peerId,
+      );
+      if (cached) cached.conversationQuality = next;
+      toast("对话风格已保存");
+      closePeerQualityModal();
+      try {
+        await loadPeers();
+      } catch (error) {
+        console.warn("peer list refresh failed after quality save", error);
+      }
+      return next;
+    }
+    async function savePeerQualityModal() {
+      if (!_peerQualityTarget) return;
+      const { botAccountId, peerId } = _peerQualityTarget;
+      const conversationQuality = readPersonaQualityControls("peerQ");
+      try {
+        validatePersonaQualityControls(conversationQuality);
+        await persistPeerQualitySave(botAccountId, peerId, conversationQuality);
+      } catch (e) {
+        toast(e.message || "保存失败", true);
+      }
+    }
     function bindPeerActions() {
+      document.querySelectorAll("[data-peer-quality-bot]").forEach((btn) => {
+        btn.onclick = () => openPeerQualityModal(
+          btn.dataset.peerQualityBot,
+          btn.dataset.peerQualityPeer,
+        );
+      });
       document.querySelectorAll("[data-ap]").forEach((btn) => {
         btn.onclick = async () => {
           const [botAccountId, peerId] = btn.dataset.ap.split("|");
@@ -4697,6 +4785,7 @@
       const q = botId ? "?botId=" + encodeURIComponent(botId) : "";
       const data = await api("/api/v1/me/peers" + q);
       const peers = data.peers || [];
+      state.peers = peers;
       const botLabel = (id) => {
         const b = (state.bots || []).find((x) => x.id === id);
         return b?.displayName || id;
@@ -5896,6 +5985,18 @@
 
     $("pubMode")?.addEventListener("change", () => syncChatflowHint());
     wirePersonaQualityControls("pubQ");
+    wirePersonaQualityControls("peerQ");
+    $("peerQualityCancel")?.addEventListener("click", closePeerQualityModal);
+    $("peerQualitySave")?.addEventListener("click", () => { void savePeerQualityModal(); });
+    $("peerQualityModal")?.addEventListener("click", (event) => {
+      if (event.target === $("peerQualityModal")) closePeerQualityModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && $("peerQualityModal")?.classList.contains("show")) {
+        event.preventDefault();
+        closePeerQualityModal();
+      }
+    });
 
     $("pubSubmit").onclick = async () => {
       const displayName = $("pubName").value.trim();

@@ -107,6 +107,7 @@ import {
   takeOauthState,
   setBotStatus,
   setPeerProactiveEnabled,
+  setPeerConversationQuality,
   unblockUser,
   updateBotDisplayName,
   updateBotProactiveSettings,
@@ -153,6 +154,8 @@ import {
   type Db,
   type Persona,
   type PersonaConversationQualityPatch,
+  type Peer,
+  type PeerConversationQualityPatch,
   type Sticker,
   type User,
   type ReleaseFileEntry,
@@ -164,6 +167,7 @@ import {
   getLlmProvider,
   toPublicProvider,
   getPublishedGraph,
+  K,
 } from "@wechat-ai/db";
 import {
   mergeBotProactiveConfig,
@@ -1488,6 +1492,7 @@ export async function registerRoutes(
         personaId,
         personaSlug: persona?.slug ?? null,
         personaName: persona?.display_name ?? null,
+        conversationQuality: p.conversation_quality ?? {},
         proactiveEnabled: Boolean(p.proactive_enabled),
         lastActivityAt: p.last_activity_at ?? null,
         lastProactiveAt: p.last_proactive_at ?? null,
@@ -1497,6 +1502,49 @@ export async function registerRoutes(
       peers: enriched,
       globalProactiveEnabled: ctx.cfg.proactiveEnabled,
     };
+  });
+
+  app.patch<{
+    Body: {
+      botAccountId: string;
+      peerId: string;
+      conversationQuality: PeerConversationQualityPatch | null;
+    };
+  }>("/api/v1/me/peers/quality", async (req, reply) => {
+    const user = await requireUser(req, reply, ctx);
+    if (!user) return;
+    const { botAccountId, peerId, conversationQuality } = req.body ?? {};
+    if (!botAccountId || !peerId || conversationQuality === undefined) {
+      return reply.code(400).send({
+        error: "botAccountId, peerId, conversationQuality required",
+      });
+    }
+    // Resolve ownership from stored bot metadata; no client-provided owner id.
+    const bot = await getBotAccount(ctx.db, botAccountId);
+    if (!bot || (bot.owner_user_id !== user.id && !user.is_admin)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const peer = await ctx.db.getJson<Peer>(K.peer(botAccountId, peerId));
+    if (!peer || peer.bot_account_id !== botAccountId || peer.peer_id !== peerId) {
+      return reply.code(404).send({ error: "peer not found" });
+    }
+    try {
+      const next = await setPeerConversationQuality(
+        ctx.db,
+        botAccountId,
+        peerId,
+        conversationQuality,
+      );
+      await writeAudit(ctx.db, "peer_quality_updated", user.id, {
+        botAccountId,
+        peerId,
+        cleared: Object.keys(next).length === 0,
+      });
+      return { conversationQuality: next };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.patch<{

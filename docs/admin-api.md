@@ -37,6 +37,7 @@ Auth: **Cookie 会话**（OAuth 登录后 `wa_session`），`credentials: includ
 | DELETE | `/api/v1/me/bots/:botId` | 删除自己的机器人（含 Redis token） |
 | GET | `/api/v1/me/peers` | 私聊用户 |
 | POST | `/api/v1/me/peers/approve` | 批准 |
+| PATCH | `/api/v1/me/peers/quality` | 保存或清除单个联络人的对话风格覆盖 |
 | PUT | `/api/v1/me/assignments` | 分配人设（须在库中） |
 | GET | `/api/v1/me/personas` | 我的库 + 我创建的 |
 | POST | `/api/v1/me/personas/:id/add` | 添加人设到库 |
@@ -126,7 +127,7 @@ Auth: **Cookie 会话**（OAuth 登录后 `wa_session`），`credentials: includ
 
 > 运行时配置详见 [`docs/runtime-settings.md`](./runtime-settings.md)：`.env` 是默认值，Redis 存覆盖，各节点 5 秒内同步。密钥字段 GET 只返回掩码；PATCH 传空 = 不改，传 `-` = 清空。
 >
-> 「对话与回复」按批次、判断、回复三段显示。连续消息静默／最长等待用秒填写；1–4 条回复与短／普通／长回答都是百分比分布，各组必须合计 100。直接问题、明确请求、重要决定与情绪受保护，不会按跳过比例盲目丢弃；覆盖率指已决定回复后的话题覆盖。人设编辑器的「进阶对话风格」可逐欄覆盖全局值；未覆盖欄位继续继承，联系人覆盖尚未提供。初稿重写最坏 2 次 LLM 调用，若同时开启二次 AI 排版则最坏 4 次。
+> 「对话与回复」按批次、判断、回复三段显示。连续消息静默／最长等待用秒填写；1–4 条回复与短／普通／长回答都是百分比分布，各组必须合计 100。直接问题、明确请求、重要决定与情绪受保护，不会按跳过比例盲目丢弃；覆盖率指已决定回复后的话题覆盖。人设编辑器的「进阶对话风格」可逐欄覆盖全局值；未覆盖欄位继续继承。联络人层设置详见下方「联络人对话风格（RULE-002）」。初稿重写最坏 2 次 LLM 调用，若同时开启二次 AI 排版则最坏 4 次。
 | GET | `/api/v1/admin/bots` | 全部机器人（owner、worker、hasToken、peer 计数；前端分页，后端批量读） |
 | GET | `/api/v1/admin/bots/:botId` | 机器人详情 + peers |
 | PATCH | `/api/v1/admin/bots/:botId` | 改名 / `{ status: active\|inactive }` 启停 |
@@ -280,3 +281,13 @@ CLI 打包：`pnpm release:pack` / `pnpm docker:build`（见 `docs/docker.md`）
 发布通道：`/admin` → 部署节点 → **上传通道包**（`files.json`，浏览器超管会话）→ 节点「更新」。
 
 另有公开探活：`GET /health`（进程）、`GET /health/ready`（含 Redis，供 LB）。
+# 联络人对话风格（RULE-002）
+
+机器人所有者可在用户中心的联络人表格打开「对话风格」，逐项覆盖话题覆盖率、追问倾向、回答长度比例、情绪延续轮数与重复检查轮数。勾选「继承人设与全局」会清除该项覆盖；全部继承时会删除联络人的独立设置。
+
+管理员沿用现有 `is_admin` 授权，也可代管任意机器人的联络人设置。服务端会按 `botAccountId` 重新读取机器人并检查 owner／admin，不接受客户端传入 owner 身份。
+
+- `GET /api/v1/me/peers?botId=<bot>`：列表中的 `conversationQuality` 是联络人层 partial override，空对象表示全部继承。
+- `PATCH /api/v1/me/peers/quality`：body 为 `{ botAccountId, peerId, conversationQuality }`。字段值 `null` 表示清除该字段；`lengthWeights` 必须以三元素、合计 100 的 tuple 一次保存。
+
+设置存于独立的 bot＋peer Redis JSON key，不会写进 Peer JSON，因此聊天活动与主动联系开关的更新不会覆盖对话风格。

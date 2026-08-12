@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  K,
   approvePeer,
   clearMessages,
   createPersona,
@@ -11,6 +12,7 @@ import {
   openDatabase,
   seedPersonas,
   setAssignment,
+  setPeerConversationQuality,
   updatePersonaMeta,
   upsertBotAccount,
 } from "@wechat-ai/db";
@@ -54,6 +56,79 @@ function asLlm(fake: CapturingLlm): LlmClient {
 }
 
 describe("ChatService global conversation quality (Redis)", () => {
+  it("inherits persona/global settings when the optional peer overlay is malformed", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try { await db.ping(); } catch { t.skip("Redis not available"); return; }
+    const persona = await createPersona(db, {
+      displayName: `malformed-peer-quality-${process.pid}`,
+      systemPrompt: "reply naturally",
+      ownerUserId: "malformed_quality_owner",
+      visibility: "private",
+      conversationQuality: { coveragePercent: 43 },
+    });
+    const botId = `malformed_peer_quality_${process.pid}_${Math.random()}`;
+    const peerId = "malformed-quality@im.wechat";
+    await upsertBotAccount(db, { id: botId, ownerUserId: "malformed_quality_owner", displayName: "malformed-quality", botToken: "token" });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+    await db.redis.set(K.peerQuality(botId, peerId), "{");
+    const chat = new ChatService(db, asLlm(new CapturingLlm()), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      shortHistoryLimit: 20,
+      conversationQuality: { coveragePercent: 80 },
+    });
+    const result = await chat.handleInbound({ botAccountId: botId, peerId, text: "繼承設定", contextToken: "malformed-quality" });
+    assert.equal(result.kind, "reply");
+    assert.equal(result.qualityPlan?.coveragePercent, 43);
+  });
+
+  it("merges global, persona and peer fields then falls back after peer clear", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try { await db.ping(); } catch { t.skip("Redis not available"); return; }
+    const persona = await createPersona(db, {
+      displayName: `peer-quality-persona-${process.pid}`,
+      systemPrompt: "reply naturally",
+      ownerUserId: "peer_quality_owner",
+      visibility: "private",
+      conversationQuality: { coveragePercent: 44, emotionContinuityTurns: 6 },
+    });
+    const botId = `bot_peer_quality_${process.pid}_${Math.random()}`;
+    const peerId = "peer-quality@im.wechat";
+    await upsertBotAccount(db, { id: botId, ownerUserId: "peer_quality_owner", displayName: "peer-quality", botToken: "token" });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+    await setPeerConversationQuality(db, botId, peerId, {
+      coveragePercent: 91,
+      lengthWeights: [0, 0, 100],
+      repetitionWindowAssistantTurns: 3,
+    });
+    const makeChat = () => new ChatService(db, asLlm(new CapturingLlm()), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      shortHistoryLimit: 20,
+      conversationQuality: { coveragePercent: 80, followUpPercent: 10, lengthWeights: [0, 100, 0], emotionContinuityTurns: 2, repetitionWindowAssistantTurns: 8 },
+    });
+    const overridden = await makeChat().handleInbound({ botAccountId: botId, peerId, text: "今天安排如何？", contextToken: "peer-quality" });
+    assert.equal(overridden.qualityPlan?.coveragePercent, 91);
+    assert.equal(overridden.qualityPlan?.followUpPercent, 10);
+    assert.deepEqual(overridden.qualityPlan?.lengthWeights, [0, 0, 100]);
+    assert.equal(overridden.qualityPlan?.emotionContinuityTurns, 6);
+    assert.equal(overridden.qualityPlan?.repetitionWindowAssistantTurns, 3);
+
+    await setPeerConversationQuality(db, botId, peerId, null);
+    const inherited = await makeChat().handleInbound({ botAccountId: botId, peerId, text: "再確認一次", contextToken: "peer-quality-clear" });
+    assert.equal(inherited.qualityPlan?.coveragePercent, 44);
+    assert.deepEqual(inherited.qualityPlan?.lengthWeights, [0, 100, 0]);
+    assert.equal(inherited.qualityPlan?.repetitionWindowAssistantTurns, 8);
+  });
+
   it("merges global settings with the assigned persona patch field by field", async (t) => {
     const db = openDatabase(redisUrl);
     t.after(() => db.close());

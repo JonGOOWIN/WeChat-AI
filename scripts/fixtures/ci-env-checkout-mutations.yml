@@ -1,0 +1,8 @@
+workflowEnv:
+  npm_config_script_shell: /bin/true
+jobEnv:
+  npm_config_script_shell: /bin/true
+stepEnv:
+  npm_config_script_shell: /bin/true
+checkoutWith:
+  ref: ${{ github.event.pull_request.base.sha }}

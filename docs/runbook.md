@@ -4,8 +4,8 @@
 
 ### 1.1 依赖
 
-- Node.js 20+
-- pnpm
+- Node.js 20.9+（lint 工具链最低版本）
+- pnpm 11.15.0（由根目录 `packageManager` 锁定）
 - **Upstash Redis**（`rediss://...`）
 - **LINUX DO OAuth** 应用
 - LLM API Key（OpenAI 兼容）
@@ -55,6 +55,19 @@ pnpm diag
 pnpm db:seed
 pnpm dev
 ```
+
+### 1.3.1 开发质量门禁
+
+先执行 `corepack enable`，再于仓库根目录执行：
+
+```powershell
+npm run lint
+npm test
+npm run typecheck
+npm run build
+```
+
+`npm run lint` 会扫描所有 workspace TypeScript 源码与测试、Cloudflare Worker TypeScript 源码及仓库 JavaScript 脚本。它不扫描依赖、`dist` / `build` / `coverage`、Wrangler 产物、`apps/api/public` 静态浏览器页面、控制台用单文件 bundle `cloudflare-worker/worker.js`、Python 工具或 lint 契约的故意错误 fixture。
 
 | 页面 | URL |
 |------|-----|

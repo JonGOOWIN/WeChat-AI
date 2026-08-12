@@ -27,10 +27,14 @@ const PORT = 8891;
 async function loadPlaywright() {
   try {
     return await import("playwright");
-  } catch (_) {}
+  } catch {
+    // Optional dependency; try the core package next.
+  }
   try {
     return await import("playwright-core");
-  } catch (_) {}
+  } catch {
+    // Optional dependency; fall back to the npx cache below.
+  }
   const cacheRoot = path.join(
     process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || "", "AppData", "Local"),
     "npm-cache",
@@ -329,7 +333,9 @@ async function newPage(browser, { viewport, theme, mode }) {
     locale: "zh-CN",
   });
   await context.addInitScript((t) => {
-    try { localStorage.setItem("wa_theme", t); } catch (_) {}
+    try { localStorage.setItem("wa_theme", t); } catch {
+      // Preview still works when storage is unavailable.
+    }
   }, theme);
   await context.route("**/api/v1/**", (route) => {
     const u = new URL(route.request().url());

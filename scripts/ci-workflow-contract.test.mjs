@@ -24,12 +24,23 @@ function assertReadOnlyAndSecretFree(workflow) {
 
 function assertNonBypassableAndBounded(workflow) {
   assert.equal(workflow.defaults, undefined, "workflow must not define defaults");
+  assert.equal(workflow.env, undefined, "workflow env must be absent");
   for (const [name, job] of Object.entries(workflow.jobs)) {
     assert.equal(job.if, undefined, `${name} job must not be conditional`);
     assert.equal(job.defaults, undefined, `${name} job must not define defaults`);
     assert.equal(job["continue-on-error"], undefined, `${name} job must not define continue-on-error`);
     assert.equal(job["timeout-minutes"], name === "test" ? 30 : 20);
+    if (name === "test") {
+      assert.deepEqual(
+        job.env,
+        { REDIS_URL: "redis://localhost:6379" },
+        "test job env must contain only REDIS_URL",
+      );
+    } else {
+      assert.equal(job.env, undefined, `${name} job env must be absent`);
+    }
     for (const [index, step] of job.steps.entries()) {
+      assert.equal(step.env, undefined, `${name} step ${index} env must be absent`);
       assert.equal(
         step["continue-on-error"],
         undefined,
@@ -40,6 +51,29 @@ function assertNonBypassableAndBounded(workflow) {
         assert.equal(step.shell, undefined, `${name} command step ${index} must not define shell`);
       }
     }
+  }
+}
+
+function assertPinnedToolchainAndMatchingGates(workflow, packageJson) {
+  const engineFloor = packageJson.engines.node.match(/^>=(\d+\.\d+\.\d+)$/)?.[1];
+
+  assert.equal(packageJson.engines.node, ">=22.13.0");
+  assert.match(packageJson.packageManager, /^pnpm@11\.15\.0$/);
+  for (const name of expectedJobs) {
+    const job = workflow.jobs[name];
+    const checkoutSteps = job.steps.filter(
+      (step) => String(step.uses).split("@")[0].toLowerCase() === "actions/checkout",
+    );
+    assert.equal(checkoutSteps.length, 1, `${name} must run exactly one checkout action`);
+    assert.equal(checkoutSteps[0].uses, "actions/checkout@v4", `${name} checkout must use v4`);
+    assert.equal(checkoutSteps[0].with, undefined, `${name} checkout with must be absent`);
+    assert.equal(stepsUsing(job, "pnpm/action-setup").length, 1);
+    const setupNode = stepsUsing(job, "actions/setup-node");
+    assert.equal(setupNode.length, 1);
+    assert.equal(setupNode[0].with["node-version"], engineFloor);
+    assert.equal(setupNode[0].with.cache, "pnpm");
+    assert.ok(job.steps.some((step) => step.run === "pnpm install --frozen-lockfile"));
+    assert.ok(job.steps.some((step) => step.run === `npm run ${name}`));
   }
 }
 
@@ -73,21 +107,62 @@ test("fork pull requests cannot consume repository self-hosted runners", async (
 test("CI jobs install the pinned toolchain and run one matching gate", async () => {
   const workflow = await loadWorkflow();
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
-  const engineFloor = packageJson.engines.node.match(/^>=(\d+\.\d+\.\d+)$/)?.[1];
 
-  assert.equal(packageJson.engines.node, ">=22.13.0");
-  assert.match(packageJson.packageManager, /^pnpm@11\.15\.0$/);
-  for (const name of expectedJobs) {
-    const job = workflow.jobs[name];
-    assert.equal(stepsUsing(job, "actions/checkout").length, 1);
-    assert.equal(stepsUsing(job, "pnpm/action-setup").length, 1);
-    const setupNode = stepsUsing(job, "actions/setup-node");
-    assert.equal(setupNode.length, 1);
-    assert.equal(setupNode[0].with["node-version"], engineFloor);
-    assert.equal(setupNode[0].with.cache, "pnpm");
-    assert.ok(job.steps.some((step) => step.run === "pnpm install --frozen-lockfile"));
-    assert.ok(job.steps.some((step) => step.run === `npm run ${name}`));
+  assertPinnedToolchainAndMatchingGates(workflow, packageJson);
+});
+
+test("CI gate rejects npm script-shell replacement at workflow, job, and step scope", async () => {
+  const [workflow, mutations] = await Promise.all([
+    loadWorkflow(),
+    readFile("scripts/fixtures/ci-env-checkout-mutations.yml", "utf8").then(parse),
+  ]);
+  const targets = [
+    ["workflow", (candidate) => { candidate.env = mutations.workflowEnv; }],
+    ["job", (candidate) => { candidate.jobs.lint.env = mutations.jobEnv; }],
+    ["test job", (candidate) => {
+      candidate.jobs.test.env = { ...candidate.jobs.test.env, ...mutations.jobEnv };
+    }],
+    ["step", (candidate) => { candidate.jobs.lint.steps.at(-1).env = mutations.stepEnv; }],
+  ];
+
+  assert.equal(targets.length, 4, "all environment scopes and the test allowlist must be exercised");
+  for (const [scope, mutate] of targets) {
+    const candidate = structuredClone(workflow);
+    mutate(candidate);
+    assert.throws(
+      () => assertNonBypassableAndBounded(candidate),
+      new RegExp(`${scope}.*env|env.*${scope}`, "i"),
+    );
   }
+});
+
+test("CI gate rejects checkout inputs that replace the tested revision", async () => {
+  const [workflow, packageJson, mutations] = await Promise.all([
+    loadWorkflow(),
+    readFile("package.json", "utf8").then(JSON.parse),
+    readFile("scripts/fixtures/ci-env-checkout-mutations.yml", "utf8").then(parse),
+  ]);
+  const checkout = stepsUsing(workflow.jobs.lint, "actions/checkout")[0];
+  checkout.with = mutations.checkoutWith;
+
+  assert.throws(
+    () => assertPinnedToolchainAndMatchingGates(workflow, packageJson),
+    /checkout.*with|with.*checkout/i,
+  );
+});
+
+test("CI gate rejects a second checkout hidden behind a case alias", async () => {
+  const [workflow, packageJson, mutations] = await Promise.all([
+    loadWorkflow(),
+    readFile("package.json", "utf8").then(JSON.parse),
+    readFile("scripts/fixtures/ci-env-checkout-mutations.yml", "utf8").then(parse),
+  ]);
+  workflow.jobs.lint.steps.push(mutations.checkoutAlias);
+
+  assert.throws(
+    () => assertPinnedToolchainAndMatchingGates(workflow, packageJson),
+    /exactly one checkout action/i,
+  );
 });
 
 test("CI grants read-only access, isolates Redis to tests, and does not consume production secrets", async () => {

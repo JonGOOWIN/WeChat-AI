@@ -48,6 +48,14 @@ import {
   selectMemoriesForPrompt,
 } from "./memory-retrieve.js";
 import { ChatflowEngine } from "./chatflow/engine.js";
+import {
+  buildConversationQualityRepairInstruction,
+  inspectConversationQuality,
+  planConversationQuality,
+  resolveConversationQualitySettings,
+  type ConversationQualityPlan,
+  type ConversationQualitySettings,
+} from "./conversation-quality.js";
 
 export interface ChatServiceOptions {
   shortHistoryLimit: number;
@@ -112,6 +120,9 @@ export interface ChatServiceOptions {
   visionModel?: string;
   /** Cap on caption length */
   visionCaptionMaxTokens?: number;
+  conversationQuality?: Partial<ConversationQualitySettings>;
+  /** Absolute cap for history loaded to satisfy quality windows. */
+  historySafetyCap?: number;
 }
 
 export interface InboundChatRequest {
@@ -154,6 +165,8 @@ export interface InboundChatResult {
   ownerUserId?: string;
   /** Present when kind=skip (proactive model declined) */
   skipReason?: string;
+  /** Effective deterministic plan for this normal prompt-mode turn. */
+  qualityPlan?: ConversationQualityPlan;
 }
 
 const DEFAULTS: ChatServiceOptions = {
@@ -178,6 +191,8 @@ const DEFAULTS: ChatServiceOptions = {
   webSearchMaxResults: 5,
   visionMode: "caption",
   visionCaptionMaxTokens: 300,
+  conversationQuality: {},
+  historySafetyCap: 100,
 };
 
 function renderBatchHistory(items: readonly BatchPromptItem[]): string {
@@ -282,7 +297,15 @@ export class ChatService {
    * Only the keys present in `patch` are touched.
    */
   applyRuntimeOptions(patch: Partial<ChatServiceOptions>): void {
+    const qualityPatch = patch.conversationQuality;
+    const previousQuality = this.opts.conversationQuality;
     Object.assign(this.opts, patch);
+    if (qualityPatch) {
+      this.opts.conversationQuality = {
+        ...previousQuality,
+        ...qualityPatch,
+      };
+    }
     if ("replyFilterEnabled" in patch) {
       this.replyFilter.setEnabled(this.opts.replyFilterEnabled === true);
     }
@@ -594,6 +617,16 @@ export class ChatService {
       return { kind: "reject", text: this.opts.noPersonaReply };
     }
 
+    const qualitySettings = resolveConversationQualitySettings(
+      this.opts.conversationQuality,
+    );
+    const qualityHistoryLimit = Math.min(
+      this.opts.historySafetyCap ?? 100,
+      Math.max(
+        this.opts.shortHistoryLimit,
+        qualitySettings.repetitionWindowAssistantTurns * 2,
+      ),
+    );
     // Parallelize independent Redis reads (critical on remote Redis / Upstash)
     const [systemPrompt, bot, history, memories] = await Promise.all([
       getPublishedPrompt(this.db, persona.id),
@@ -602,7 +635,7 @@ export class ChatService {
         this.db,
         req.botAccountId,
         req.peerId,
-        this.opts.shortHistoryLimit,
+        qualityHistoryLimit,
         persona.id,
       ),
       listMemories(this.db, req.botAccountId, req.peerId, persona.id),
@@ -696,6 +729,10 @@ export class ChatService {
     let rawLlmText: string;
     let promptTokens = 0;
     let completionTokens = 0;
+    let qualityPlan: ConversationQualityPlan | undefined;
+    let qualityMessages: ReturnType<typeof buildChatMessages> | undefined;
+    let qualityClient: LlmClient | undefined;
+    let qualityCallOpts: ChatCallOptions | undefined;
 
     if (persona.mode === "chatflow") {
       // Chatflow MVP: proactive path still uses prompt mode elsewhere;
@@ -732,6 +769,33 @@ export class ChatService {
       promptTokens = cf.promptTokens;
       completionTokens = cf.completionTokens;
     } else {
+      const qualityTopics = batchItems?.length
+        ? batchItems.map((item) => {
+            const adaptiveItem = req.replyPlan?.items.find(
+              (planned) => planned.id === item.id,
+            );
+            return {
+              id: item.id,
+              text: item.text,
+              hasAttachments: item.attachments.length > 0,
+              replyObligation: adaptiveItem?.replyObligation,
+              protectedObligation:
+                adaptiveItem?.kind === "new-question-or-request" ||
+                adaptiveItem?.kind === "emotional-bid" ||
+                adaptiveItem?.kind === "correction",
+            };
+          })
+        : [{ id: "turn", text: req.text, hasAttachments: attachments.length > 0 }];
+      const stableTurnKey = [
+        req.botAccountId,
+        req.peerId,
+        ...qualityTopics.map((topic) => `${topic.id}:${topic.text}`),
+      ].join("\u0000");
+      const conversationQualityPlan = planConversationQuality({
+        stableTurnKey,
+        topics: qualityTopics,
+        settings: qualitySettings,
+      });
       const messages = buildChatMessages({
         systemPrompt,
         memories: selectedMemories,
@@ -750,6 +814,7 @@ export class ChatService {
                 coveredItemIds: req.replyPlan.coveredItemIds,
               }
             : undefined,
+        conversationQualityPlan,
       });
 
       const { client: chatClient, callOpts } = await this.resolveChatClient({
@@ -762,13 +827,17 @@ export class ChatService {
       if (visionModel && attachments.some((a) => a.dataUri)) {
         callOpts.model = visionModel;
       }
+      qualityPlan = conversationQualityPlan;
+      qualityMessages = messages;
+      qualityClient = chatClient;
+      qualityCallOpts = callOpts;
       const usage = await chatClient.chatWithUsage(messages, callOpts);
       rawLlmText = usage.text;
       promptTokens = usage.promptTokens;
       completionTokens = usage.completionTokens;
     }
 
-    const finalized = await this.finalizeReplyParts({
+    let finalized = await this.finalizeReplyParts({
       rawLlmText,
       stickers,
       botAccountId: req.botAccountId,
@@ -777,7 +846,85 @@ export class ChatService {
       ownerUsername: owner?.username,
       botName: bot?.display_name,
     });
+    if (qualityPlan && qualityMessages && qualityClient && qualityCallOpts) {
+      const recentAssistantTexts = history
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.content);
+      const violations = inspectConversationQuality({
+        visibleText: finalized.displayText,
+        plan: qualityPlan,
+        recentAssistantTexts,
+      });
+      if (violations.length > 0) {
+        try {
+          const repairUsage = await qualityClient.chatWithUsage(
+            [
+              ...qualityMessages,
+              { role: "assistant", content: rawLlmText },
+              {
+                role: "user",
+                content: buildConversationQualityRepairInstruction(
+                  qualityPlan,
+                  violations,
+                ),
+              },
+            ],
+            qualityCallOpts,
+          );
+          promptTokens += repairUsage.promptTokens;
+          completionTokens += repairUsage.completionTokens;
+          const repaired = await this.finalizeReplyParts({
+            rawLlmText: repairUsage.text,
+            stickers,
+            botAccountId: req.botAccountId,
+            adaptive: Boolean(req.replyPlan),
+            ownerUserId: bot?.owner_user_id,
+            ownerUsername: owner?.username,
+            botName: bot?.display_name,
+          });
+          const repairViolations = inspectConversationQuality({
+            visibleText: repaired.displayText,
+            plan: qualityPlan,
+            recentAssistantTexts,
+          });
+          if (repairViolations.length === 0) finalized = repaired;
+        } catch (error) {
+          console.error(
+            `[quality] bounded repair failed bot=${req.botAccountId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
     const { parts, bubbles, displayText, bubblesFromJson } = finalized;
+
+    if (qualityPlan) {
+      const remainingViolations = inspectConversationQuality({
+        visibleText: displayText,
+        plan: qualityPlan,
+        recentAssistantTexts: history
+          .filter((message) => message.role === "assistant")
+          .map((message) => message.content),
+      });
+      if (remainingViolations.length > 0) {
+        await recordTokenUsage(this.db, {
+          userId: bot?.owner_user_id,
+          botId: req.botAccountId,
+          promptTokens,
+          completionTokens,
+          username: owner?.username,
+          botName: bot?.display_name,
+        });
+        return {
+          kind: "skip",
+          skipReason: "quality_check_failed",
+          personaId: persona.id,
+          personaSlug: persona.slug,
+          qualityPlan,
+        };
+      }
+    }
 
     // Fail closed before storing or sending an assistant turn. Keep the
     // adaptive skip contract unchanged; legacy callers use the same empty
@@ -851,6 +998,7 @@ export class ChatService {
       personaId: persona.id,
       personaSlug: persona.slug,
       ownerUserId: bot?.owner_user_id,
+      qualityPlan,
     };
   }
 

@@ -1,5 +1,9 @@
 import { K, type Db } from "@wechat-ai/db";
-import { assertReplyCountWeights, type AppConfig } from "./config.js";
+import {
+  assertReplyCountWeights,
+  assertReplyLengthWeights,
+  type AppConfig,
+} from "./config.js";
 import {
   coerceSetting,
   configToSettingValue,
@@ -214,6 +218,15 @@ export class RuntimeConfigManager {
           );
         }),
         "stored runtime reply count weights",
+      );
+      assertReplyLengthWeights(
+        (["Short", "Normal", "Long"] as const).map((bucket) => {
+          const key = `replyLengthWeight${bucket}` as RuntimeSettingKey;
+          return Number(
+            next[key] === undefined ? this.envDefaults[key] : next[key],
+          );
+        }),
+        "stored runtime reply length weights",
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -474,6 +487,12 @@ export class RuntimeConfigManager {
         effectiveWeight(`replyCountWeight${count}` as RuntimeSettingKey),
       ),
       "runtime reply count weights",
+    );
+    assertReplyLengthWeights(
+      (["Short", "Normal", "Long"] as const).map((bucket) =>
+        effectiveWeight(`replyLengthWeight${bucket}` as RuntimeSettingKey),
+      ),
+      "runtime reply length weights",
     );
 
     const nextDoc: RuntimeSettingsDoc = {

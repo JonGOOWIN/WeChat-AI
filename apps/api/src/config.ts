@@ -145,6 +145,13 @@ export interface AppConfig {
   replyCountWeight2: number;
   replyCountWeight3: number;
   replyCountWeight4: number;
+  replyCoveragePercent: number;
+  replyFollowUpPercent: number;
+  replyLengthWeightShort: number;
+  replyLengthWeightNormal: number;
+  replyLengthWeightLong: number;
+  emotionContinuityTurns: number;
+  repetitionWindowAssistantTurns: number;
   maxReplyChunks: number;
   maxChunkChars: number;
   /** Ask model to return {"messages":[...]} JSON bubbles */
@@ -379,6 +386,24 @@ export function assertReplyCountWeights(
   return [values[0]!, values[1]!, values[2]!, values[3]!];
 }
 
+export function assertReplyLengthWeights(
+  values: readonly number[],
+  source = "reply length weights",
+): [number, number, number] {
+  if (
+    values.length !== 3 ||
+    values.some(
+      (value) => !Number.isFinite(value) || value < 0 || value > 10_000,
+    ) ||
+    values.every((value) => value === 0)
+  ) {
+    throw new Error(
+      `${source}: reply length weights must be three finite non-negative values, not all zero`,
+    );
+  }
+  return [values[0]!, values[1]!, values[2]!];
+}
+
 function replyWeightOverride(
   raw: string | undefined,
   fallback: number,
@@ -442,6 +467,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ),
     ],
     "reply count weights from environment",
+  );
+  const replyLengthWeights = assertReplyLengthWeights(
+    [
+      boundedNumber(env.REPLY_LENGTH_WEIGHT_SHORT, 60, 0, 10_000),
+      boundedNumber(env.REPLY_LENGTH_WEIGHT_NORMAL, 30, 0, 10_000),
+      boundedNumber(env.REPLY_LENGTH_WEIGHT_LONG, 10, 0, 10_000),
+    ],
+    "reply length weights from environment",
   );
   return {
     host,
@@ -572,6 +605,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     replyCountWeight2: replyCountWeights[1],
     replyCountWeight3: replyCountWeights[2],
     replyCountWeight4: replyCountWeights[3],
+    replyCoveragePercent: boundedNumber(env.REPLY_COVERAGE_PERCENT, 70, 0, 100),
+    replyFollowUpPercent: boundedNumber(env.REPLY_FOLLOW_UP_PERCENT, 20, 0, 100),
+    replyLengthWeightShort: replyLengthWeights[0],
+    replyLengthWeightNormal: replyLengthWeights[1],
+    replyLengthWeightLong: replyLengthWeights[2],
+    emotionContinuityTurns: boundedNumber(env.EMOTION_CONTINUITY_TURNS, 4, 0, 20),
+    repetitionWindowAssistantTurns: boundedNumber(
+      env.REPETITION_WINDOW_ASSISTANT_TURNS,
+      12,
+      0,
+      50,
+    ),
     maxReplyChunks: Number(env.MAX_REPLY_CHUNKS ?? "5"),
     maxChunkChars: Number(env.MAX_CHUNK_CHARS ?? "72"),
     multiBubbleJson: env.MULTI_BUBBLE_JSON !== "false",

@@ -181,3 +181,53 @@ describe("shipped defaults: adaptive reply batching follows RULE-001", () => {
     );
   });
 });
+
+describe("shipped defaults: conversation quality follows RULE-002", () => {
+  it("ships the confirmed global defaults", () => {
+    const cfg = bare();
+    assert.equal(cfg.replyCoveragePercent, 70);
+    assert.equal(cfg.replyFollowUpPercent, 20);
+    assert.deepEqual(
+      [cfg.replyLengthWeightShort, cfg.replyLengthWeightNormal, cfg.replyLengthWeightLong],
+      [60, 30, 10],
+    );
+    assert.equal(cfg.emotionContinuityTurns, 4);
+    assert.equal(cfg.repetitionWindowAssistantTurns, 12);
+  });
+
+  it("accepts public environment overrides", () => {
+    const cfg = loadConfig({
+      REPLY_COVERAGE_PERCENT: "55",
+      REPLY_FOLLOW_UP_PERCENT: "35",
+      REPLY_LENGTH_WEIGHT_SHORT: "10",
+      REPLY_LENGTH_WEIGHT_NORMAL: "20",
+      REPLY_LENGTH_WEIGHT_LONG: "70",
+      EMOTION_CONTINUITY_TURNS: "6",
+      REPETITION_WINDOW_ASSISTANT_TURNS: "18",
+    } as NodeJS.ProcessEnv);
+    assert.deepEqual(
+      [
+        cfg.replyCoveragePercent,
+        cfg.replyFollowUpPercent,
+        cfg.replyLengthWeightShort,
+        cfg.replyLengthWeightNormal,
+        cfg.replyLengthWeightLong,
+        cfg.emotionContinuityTurns,
+        cfg.repetitionWindowAssistantTurns,
+      ],
+      [55, 35, 10, 20, 70, 6, 18],
+    );
+  });
+
+  it("rejects an all-zero length distribution", () => {
+    assert.throws(
+      () =>
+        loadConfig({
+          REPLY_LENGTH_WEIGHT_SHORT: "0",
+          REPLY_LENGTH_WEIGHT_NORMAL: "0",
+          REPLY_LENGTH_WEIGHT_LONG: "0",
+        } as NodeJS.ProcessEnv),
+      /reply length weights/i,
+    );
+  });
+});

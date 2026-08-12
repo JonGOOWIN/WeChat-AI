@@ -195,6 +195,17 @@ async function main(): Promise<void> {
       visionMode: cfg.visionMode,
       visionModel: cfg.visionModel || undefined,
       visionCaptionMaxTokens: cfg.visionCaptionMaxTokens,
+      conversationQuality: {
+        coveragePercent: cfg.replyCoveragePercent,
+        followUpPercent: cfg.replyFollowUpPercent,
+        lengthWeights: [
+          cfg.replyLengthWeightShort,
+          cfg.replyLengthWeightNormal,
+          cfg.replyLengthWeightLong,
+        ],
+        emotionContinuityTurns: cfg.emotionContinuityTurns,
+        repetitionWindowAssistantTurns: cfg.repetitionWindowAssistantTurns,
+      },
     },
     visionLlm,
   );

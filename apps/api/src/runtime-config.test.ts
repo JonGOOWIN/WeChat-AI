@@ -259,6 +259,30 @@ describe("RuntimeConfigManager", () => {
     assert.equal(applied.length, 0);
   });
 
+  it("rejects an all-zero reply-length patch before persisting or applying it", async () => {
+    await assert.rejects(
+      mgr.patch({
+        patch: {
+          replyLengthWeightShort: 0,
+          replyLengthWeightNormal: 0,
+          replyLengthWeightLong: 0,
+        },
+        actor: "tester",
+      }),
+      /reply length weights/i,
+    );
+    assert.deepEqual(
+      [
+        cfg.replyLengthWeightShort,
+        cfg.replyLengthWeightNormal,
+        cfg.replyLengthWeightLong,
+      ],
+      [60, 30, 10],
+    );
+    assert.equal(db.store.size, 0);
+    assert.equal(applied.length, 0);
+  });
+
   it("keeps the last good UI and worker config when stored weights are all zero", async () => {
     db.store.set("wa:settings:runtime", {
       values: {

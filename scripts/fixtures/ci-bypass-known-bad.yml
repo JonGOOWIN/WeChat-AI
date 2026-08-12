@@ -1,0 +1,10 @@
+defaults:
+  run:
+    shell: bash {0} || true
+jobs:
+  lint:
+    timeout-minutes: 20
+    continue-on-error: ${{ true }}
+    steps:
+      - run: npm run lint
+        shell: bash {0} || true

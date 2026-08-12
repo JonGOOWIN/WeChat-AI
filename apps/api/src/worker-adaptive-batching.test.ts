@@ -50,6 +50,74 @@ function inbound(text: string, token: string, at: number): WeixinMessage {
 }
 
 describe("BotWorkerManager adaptive reply seam", () => {
+  it("hot-disables aggregation so the next ordinary message is ready immediately", async () => {
+    const clock = new FakeClock();
+    const conversations: Array<Record<string, unknown>> = [];
+    const worker = new BotWorkerManager({
+      db: { redis: { set: async () => "OK" } } as unknown as Db,
+      chat: {
+        async handleInbound(request: Record<string, unknown>) {
+          conversations.push(request);
+          return { kind: "reply" as const, text: "收到" };
+        },
+      } as unknown as ChatService,
+      p2pEnabled: false,
+      replyBatchClock: clock,
+    });
+    const client = {
+      async startTyping() {},
+      async stopTyping() {},
+      async sendText() {},
+    } as unknown as ILinkClient;
+
+    worker.applyRuntimeConfig({ replyBatchEnabled: false });
+    await worker.acceptInboundMessage(
+      "bot-a",
+      client,
+      inbound("现在回复", "token", 1),
+    );
+
+    assert.equal(await worker.processNextReply(), true);
+    assert.equal(conversations.length, 1);
+    assert.deepEqual(
+      (conversations[0]?.batchItems as Array<{ text: string }>).map(
+        (item) => item.text,
+      ),
+      ["现在回复"],
+    );
+  });
+
+  it("flushes the older pending batch before hot-disabling aggregation", async () => {
+    const clock = new FakeClock();
+    const conversations: string[][] = [];
+    const worker = new BotWorkerManager({
+      db: { redis: { set: async () => "OK" } } as unknown as Db,
+      chat: {
+        async handleInbound(request: Record<string, unknown>) {
+          conversations.push(
+            (request.batchItems as Array<{ text: string }>).map((item) => item.text),
+          );
+          return { kind: "reply" as const, text: "收到" };
+        },
+      } as unknown as ChatService,
+      p2pEnabled: false,
+      replyBatchClock: clock,
+    });
+    const client = {
+      async startTyping() {},
+      async stopTyping() {},
+      async sendText() {},
+    } as unknown as ILinkClient;
+
+    await worker.acceptInboundMessage("bot-a", client, inbound("较早", "old", 1));
+    worker.applyRuntimeConfig({ replyBatchEnabled: false });
+    await worker.acceptInboundMessage("bot-a", client, inbound("较新", "new", 2));
+
+    assert.equal(await worker.processNextReply(), true);
+    assert.equal(await worker.processNextReply(), true);
+    assert.deepEqual(conversations, [["较早"], ["较新"]]);
+  });
+
   it("turns same-peer inbound events into one conversation and ordered sends", async (t) => {
     const clock = new FakeClock();
     const conversations: Array<Record<string, unknown>> = [];

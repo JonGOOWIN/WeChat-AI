@@ -8,6 +8,31 @@ import {
 } from "./runtime-config-apply.js";
 
 describe("runtime quality settings application", () => {
+  it("hot-applies batching controls to the active worker", () => {
+    const patches: Array<Record<string, unknown>> = [];
+    const cfg = loadConfig({
+      REPLY_BATCH_ENABLED: "false",
+      REPLY_BATCH_SILENCE_MS: "3000",
+      REPLY_BATCH_MAX_WAIT_MS: "9000",
+      REPLY_SKIP_BIAS_PERCENT: "25",
+      REPLY_COUNT_WEIGHTS: "40,30,20,10",
+    } as NodeJS.ProcessEnv);
+    const targets = {
+      chat: { applyRuntimeOptions() {} },
+      tryChat: { applyRuntimeOptions() {} },
+      worker: { applyRuntimeConfig: (patch: Record<string, unknown>) => patches.push(patch) },
+      activityBus: { applyRuntimeOptions() {} },
+    } as unknown as RuntimeConfigTargets;
+
+    applyRuntimeConfigToServices(new Set(["replyBatchEnabled"]), cfg, targets);
+
+    assert.equal(patches[0]?.replyBatchEnabled, false);
+    assert.equal(patches[0]?.replyBatchSilenceMs, 3000);
+    assert.equal(patches[0]?.replyBatchMaxWaitMs, 9000);
+    assert.equal(patches[0]?.replySkipBiasPercent, 25);
+    assert.deepEqual(patches[0]?.replyCountWeights, [40, 30, 20, 10]);
+  });
+
   it("hot-applies the effective global quality settings to ChatService", () => {
     const patches: Array<Parameters<ChatService["applyRuntimeOptions"]>[0]> = [];
     const cfg = loadConfig({

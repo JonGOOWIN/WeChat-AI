@@ -134,6 +134,8 @@ export interface AppConfig {
   corsOrigins: Set<string>;
   /** Split AI reply into multiple WeChat bubbles */
   splitReply: boolean;
+  /** Enable RULE-001 aggregation for ordinary inbound conversations. */
+  replyBatchEnabled: boolean;
   /** Quiet window before an ordinary AI batch closes. */
   replyBatchSilenceMs: number;
   /** Hard deadline measured from the first item in a batch. */
@@ -386,10 +388,10 @@ export function assertReplyCountWeights(
     values.some(
       (value) => !Number.isFinite(value) || value < 0 || value > 10_000,
     ) ||
-    values.every((value) => value === 0)
+    values.reduce((sum, value) => sum + value, 0) !== 100
   ) {
     throw new Error(
-      `${source}: reply count weights must be four finite non-negative values, not all zero`,
+      `${source}: reply count weights must be four finite non-negative values totaling exactly 100`,
     );
   }
   return [values[0]!, values[1]!, values[2]!, values[3]!];
@@ -404,10 +406,10 @@ export function assertReplyLengthWeights(
     values.some(
       (value) => !Number.isFinite(value) || value < 0 || value > 10_000,
     ) ||
-    values.every((value) => value === 0)
+    values.reduce((sum, value) => sum + value, 0) !== 100
   ) {
     throw new Error(
-      `${source}: reply length weights must be three finite non-negative values, not all zero`,
+      `${source}: reply length weights must be three finite non-negative values totaling exactly 100`,
     );
   }
   return [values[0]!, values[1]!, values[2]!];
@@ -485,6 +487,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ],
     "reply length weights from environment",
   );
+  const replyBatchSilenceMs = positiveNumber(
+    env.REPLY_BATCH_SILENCE_MS,
+    10_000,
+  );
+  const replyBatchMaxWaitMs = positiveNumber(
+    env.REPLY_BATCH_MAX_WAIT_MS,
+    20_000,
+  );
+  if (replyBatchSilenceMs > replyBatchMaxWaitMs) {
+    throw new Error(
+      "REPLY_BATCH_SILENCE_MS: silence window must not exceed maximum wait",
+    );
+  }
   return {
     host,
     port,
@@ -602,8 +617,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ),
     peerRatePerMinute: Number(env.PEER_RATE_PER_MINUTE ?? "20"),
     splitReply: env.SPLIT_REPLY !== "false",
-    replyBatchSilenceMs: positiveNumber(env.REPLY_BATCH_SILENCE_MS, 10_000),
-    replyBatchMaxWaitMs: positiveNumber(env.REPLY_BATCH_MAX_WAIT_MS, 20_000),
+    replyBatchEnabled: env.REPLY_BATCH_ENABLED !== "false",
+    replyBatchSilenceMs,
+    replyBatchMaxWaitMs,
     replySkipBiasPercent: boundedNumber(
       env.REPLY_SKIP_BIAS_PERCENT,
       10,

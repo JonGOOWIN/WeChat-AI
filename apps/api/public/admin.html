@@ -1472,6 +1472,39 @@
       line-height: 1.5;
       margin-bottom: 6px;
     }
+    .conversation-flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .conversation-stage {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--separator);
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+    }
+    .conversation-stage-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 10px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid var(--separator);
+    }
+    .conversation-stage-title { font-size: 13px; font-weight: 650; color: var(--text); }
+    .conversation-stage-summary {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    .conversation-stage .set-grid { grid-template-columns: 1fr; margin-top: 0; gap: 12px; }
+    @media (max-width: 1040px) {
+      .conversation-flow { grid-template-columns: 1fr; }
+    }
     .var-toolbar {
       display: flex;
       flex-wrap: wrap;
@@ -6340,6 +6373,10 @@
       return item.value;
     }
 
+    function settingsDisplayValue(item, value) {
+      return item.displayDivisor ? Number(value) / item.displayDivisor : value;
+    }
+
     function settingsVisible(item) {
       const q = ($("settingsQ")?.value || "").trim().toLowerCase();
       if ($("settingsOnlyOverridden")?.checked && !item.overridden) return false;
@@ -6354,7 +6391,7 @@
 
     function settingsFieldHtml(item, disabled) {
       const dis = disabled ? " disabled" : "";
-      const v = settingsPendingValue(item);
+      const v = settingsDisplayValue(item, settingsPendingValue(item));
       // The visible label lives in a sibling div, so each control carries its
       // own accessible name — otherwise screen readers announce a bare spinner.
       const aria = ` aria-label="${esc(item.label)}"`;
@@ -6375,9 +6412,10 @@
         );
       }
       if (item.type === "int" || item.type === "float") {
-        const step = item.step != null ? item.step : item.type === "int" ? 1 : 0.01;
-        const min = item.min != null ? ` min="${esc(String(item.min))}"` : "";
-        const max = item.max != null ? ` max="${esc(String(item.max))}"` : "";
+        const divisor = item.displayDivisor || 1;
+        const step = item.step != null ? item.step / divisor : (item.type === "int" ? 1 : 0.01) / divisor;
+        const min = item.min != null ? ` min="${esc(String(item.min / divisor))}"` : "";
+        const max = item.max != null ? ` max="${esc(String(item.max / divisor))}"` : "";
         return (
           `<input type="number" data-set-key="${esc(item.key)}"${aria} value="${esc(String(v))}"` +
           `${min}${max} step="${esc(String(step))}"${dis} />`
@@ -6428,11 +6466,40 @@
         `<code class="set-env">${esc(item.env)}</code>${badges.join("")}</div>` +
         (item.hint ? `<div class="set-hint">${esc(item.hint)}</div>` : "") +
         settingsFieldHtml(item, disabled) +
-        `<div class="set-foot"><span>默认 ${esc(settingsFmtValue(item, item.envDefault))}</span>` +
+        `<div class="set-foot"><span>默认 ${esc(settingsFmtValue(item, settingsDisplayValue(item, item.envDefault)))}</span>` +
         `<button type="button" data-set-reset="${esc(item.key)}"${canReset ? "" : " disabled"}>` +
         `${pendingReset || pendingEdit ? "撤销改动" : "恢复默认"}</button></div>` +
         `</div>`
       );
+    }
+
+    function settingsConversationSummary(stage) {
+      const value = (key) => {
+        const item = settingsState.items.find((candidate) => candidate.key === key);
+        return item ? settingsDisplayValue(item, settingsPendingValue(item)) : "—";
+      };
+      if (stage === "batch") return `${value("replyBatchSilenceMs")} / ${value("replyBatchMaxWaitMs")} 秒`;
+      if (stage === "decide") return `跳过 ${value("replySkipBiasPercent")}% · 覆盖 ${value("replyCoveragePercent")}%`;
+      if (stage === "reply") {
+        const countTotal = [1, 2, 3, 4].reduce((sum, n) => sum + Number(value(`replyCountWeight${n}`)), 0);
+        const lengthTotal = ["Short", "Normal", "Long"].reduce((sum, bucket) => sum + Number(value(`replyLengthWeight${bucket}`)), 0);
+        return `条数 ${countTotal}% · 长度 ${lengthTotal}%`;
+      }
+      return "";
+    }
+
+    function settingsRefreshConversationSummaries() {
+      document.querySelectorAll("[data-conversation-summary]").forEach((el) => {
+        el.textContent = settingsConversationSummary(el.dataset.conversationSummary);
+      });
+    }
+
+    function settingsConversationStageHtml(stage, rows, disabled) {
+      const labels = { batch: "批次", decide: "判断", reply: "回复" };
+      return `<div class="conversation-stage" data-conversation-stage="${stage}">` +
+        `<div class="conversation-stage-head"><span class="conversation-stage-title">${labels[stage]}</span>` +
+        `<span class="conversation-stage-summary" data-conversation-summary="${stage}">${esc(settingsConversationSummary(stage))}</span></div>` +
+        `<div class="set-grid">${rows.map((r) => settingsRowHtml(r, disabled)).join("")}</div></div>`;
     }
 
     function renderSettings() {
@@ -6449,10 +6516,19 @@
       for (const g of settingsState.groups) {
         const rows = byGroup.get(g.id);
         if (!rows || !rows.length) continue;
+        const staged = g.id === "chat" ? rows.filter((row) => row.stage) : [];
+        const ordinary = staged.length ? rows.filter((row) => !row.stage) : rows;
+        const flow = staged.length
+          ? `<div class="conversation-flow" aria-label="批次、判断、回复参数">${["batch", "decide", "reply"]
+              .map((stage) => settingsConversationStageHtml(stage, staged.filter((row) => row.stage === stage), disabled))
+              .join("")}</div>`
+          : "";
         parts.push(
           `<div class="panel"><div class="panel-head"><div><h3>${esc(g.label)}</h3>` +
             `<p class="muted" style="margin:4px 0 0;font-size:13px">${esc(g.desc)}</p></div></div>` +
-            `<div class="set-grid">${rows.map((r) => settingsRowHtml(r, disabled)).join("")}</div></div>`,
+            flow +
+            (ordinary.length ? `<div class="set-grid">${ordinary.map((r) => settingsRowHtml(r, disabled)).join("")}</div>` : "") +
+            `</div>`,
         );
       }
       host.innerHTML = parts.length
@@ -6473,11 +6549,12 @@
             // treat blank as "no change" and let the user finish typing.
             if (el.value.trim() === "") {
               settingsState.dirty.delete(item.key);
+              if (item.stage) settingsRefreshConversationSummaries();
               settingsSyncDirtyUi();
               return;
             }
             const n = Number(el.value);
-            next = Number.isFinite(n) ? n : item.value;
+            next = Number.isFinite(n) ? n * (item.displayDivisor || 1) : item.value;
           } else next = el.value;
           // Secrets never round-trip their real value, so any non-empty entry
           // counts as a change and an empty box means "leave it alone".
@@ -6485,6 +6562,9 @@
             item.type === "secret" ? String(next) === "" : next === item.value;
           if (same) settingsState.dirty.delete(item.key);
           else settingsState.dirty.set(item.key, next);
+          if (item.stage && (item.type === "int" || item.type === "float")) {
+            settingsRefreshConversationSummaries();
+          }
           settingsSyncDirtyUi();
           if (item.type === "bool") renderSettings();
         };

@@ -79,7 +79,9 @@ wa:settings:runtime（Redis JSON）  ←  管理面板写入
   `repetitionWindowAssistantTurns` 默认检查最近 12 个 assistant 轮次。以上设置会在下一轮
   对话热生效；同一批次重试使用稳定 turn key，不会重新抽取另一组目标。生成结果如超出
   长度上限、追问过多或复用近期显著套话，只允许在送出前重写一次；仍不合格就不发送，
-  不会产生重复气泡。
+  不会产生重复气泡。默认关闭二次 AI 排版时，最坏是初稿＋重写共 2 次 LLM 调用；若同时
+  开启 `replyFilterEnabled`，初稿与重写各自还会排版一次，最坏共 4 次 LLM 调用，会增加
+  成本与延迟。管理面板的「重复检查 assistant 轮数」提示会显示这项代价。
 - `ChatService.webSearch` 原本在构造函数里判断一次，`WEB_SEARCH_ENABLED=false` 启动就永远
   是 `null`。现在按 tools 配置的指纹惰性重建。
 - `BotWorkerManager` 的 10 个 `readonly` 标量改成可写，且 setter 里复刻了构造函数的

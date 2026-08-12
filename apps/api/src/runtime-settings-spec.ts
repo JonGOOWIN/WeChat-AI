@@ -356,6 +356,7 @@ export const SETTING_SPECS: SettingSpec[] = [
     type: "int",
     min: 0,
     max: 50,
+    hint: "違規初稿在送出前最多重寫一次；若同時開啟二次 AI 排版，最壞為主生成、主排版、重寫、重寫排版共 4 次 LLM 呼叫",
   },
   {
     key: "replyDelayMsPerChar",

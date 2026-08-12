@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   approvePeer,
   clearMessages,
+  createPersona,
   getPersonaBySlug,
   getUsageDayStats,
   insertMessage,
@@ -10,6 +11,7 @@ import {
   openDatabase,
   seedPersonas,
   setAssignment,
+  updatePersonaMeta,
   upsertBotAccount,
 } from "@wechat-ai/db";
 import type { LlmClient } from "@wechat-ai/llm";
@@ -52,6 +54,72 @@ function asLlm(fake: CapturingLlm): LlmClient {
 }
 
 describe("ChatService global conversation quality (Redis)", () => {
+  it("merges global settings with the assigned persona patch field by field", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try {
+      await db.ping();
+    } catch {
+      t.skip("Redis not available");
+      return;
+    }
+
+    const persona = await createPersona(db, {
+      displayName: `quality-persona-${process.pid}`,
+      systemPrompt: "reply as the assigned persona",
+      ownerUserId: "u_quality_persona",
+      visibility: "private",
+      conversationQuality: {
+        coveragePercent: 44,
+        emotionContinuityTurns: 6,
+      },
+    });
+    const botId = `bot_quality_persona_${process.pid}`;
+    const peerId = "quality_persona@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_quality_persona",
+      displayName: "quality-persona-test",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+
+    const llm = new CapturingLlm();
+    const chat = new ChatService(db, asLlm(llm), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      shortHistoryLimit: 20,
+      conversationQuality: {
+        coveragePercent: 80,
+        followUpPercent: 10,
+        lengthWeights: [0, 100, 0],
+        emotionContinuityTurns: 2,
+        repetitionWindowAssistantTurns: 8,
+      },
+    });
+    const result = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "幫我提醒帶傘",
+      contextToken: "quality-persona-precedence",
+    });
+
+    assert.equal(result.kind, "reply");
+    assert.equal(result.qualityPlan?.coveragePercent, 44);
+    assert.equal(result.qualityPlan?.followUpPercent, 10);
+    assert.deepEqual(result.qualityPlan?.lengthWeights, [0, 100, 0]);
+    assert.equal(result.qualityPlan?.emotionContinuityTurns, 6);
+    assert.equal(result.qualityPlan?.repetitionWindowAssistantTurns, 8);
+    const system = (llm.calls[0] as Array<{ content: string }>)[0]?.content ?? "";
+    assert.match(system, /回覆覆蓋率：44%/);
+    assert.match(system, /追問目標：10%/);
+    assert.match(system, /情緒延續：最近 6 個完成輪次/);
+    assert.match(system, /重複檢查：最近 8 個 assistant 輪次/);
+  });
+
   it("sends the shipped quality defaults and enough repetition history to the real model prompt", async (t) => {
     const db = openDatabase(redisUrl);
     t.after(() => db.close());
@@ -64,6 +132,7 @@ describe("ChatService global conversation quality (Redis)", () => {
 
     await seedPersonas(db);
     const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    await updatePersonaMeta(db, persona.id, { conversationQuality: null });
     const botId = `bot_quality_defaults_${process.pid}`;
     const peerId = "quality_defaults@im.wechat";
     await upsertBotAccount(db, {
@@ -131,6 +200,7 @@ describe("ChatService global conversation quality (Redis)", () => {
     }
     await seedPersonas(db);
     const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    await updatePersonaMeta(db, persona.id, { conversationQuality: null });
     const botId = `bot_quality_hot_apply_${process.pid}`;
     const peerId = "quality_hot_apply@im.wechat";
     await upsertBotAccount(db, {
@@ -281,6 +351,7 @@ describe("ChatService global conversation quality (Redis)", () => {
     }
     await seedPersonas(db);
     const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    await updatePersonaMeta(db, persona.id, { conversationQuality: null });
     const botId = `bot_quality_repair_${process.pid}`;
     const peerId = "quality_repair@im.wechat";
     await upsertBotAccount(db, {
@@ -512,6 +583,7 @@ describe("ChatService global conversation quality (Redis)", () => {
     }
     await seedPersonas(db);
     const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    await updatePersonaMeta(db, persona.id, { conversationQuality: null });
     const botId = `bot_quality_usage_${process.pid}`;
     const peerId = "quality_usage@im.wechat";
     await upsertBotAccount(db, {

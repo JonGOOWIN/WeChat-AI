@@ -1157,6 +1157,15 @@
     .editor-help code {
       font-size: 11px;
     }
+    .quality-editor { border: 1px solid var(--separator); border-radius: var(--radius-sm); padding: 0 14px; background: var(--surface-2); }
+    .quality-editor summary { cursor: pointer; padding: 13px 0; font-weight: 650; color: var(--text); }
+    .quality-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 2px 0 14px; }
+    .quality-control { min-width: 0; padding: 12px; border-radius: var(--radius-xs); background: var(--surface); }
+    .quality-control > .row { justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .quality-inherit { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+    .quality-length { grid-column: 1 / -1; }
+    .quality-length-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    @media (max-width: 700px) { .quality-grid { grid-template-columns: 1fr; } .quality-length { grid-column: auto; } }
     .name-edit {
       display: flex;
       flex-wrap: wrap;
@@ -3077,6 +3086,17 @@
             Chatflow 模式下，请在发布后打开流程编辑器编排节点。LLM / 搜索节点只经工具网关出站。
             <a href="/chatflow" id="pubChatflowLink" target="_blank" rel="noopener">打开 Chatflow 编辑器</a>
           </p>
+          <details class="quality-editor">
+            <summary>进阶对话风格</summary>
+            <p class="editor-help">每项可单独覆盖；勾选「继承全局」时跟随后台设置。长度比例作为一组保存，三项须合计 100。</p>
+            <div class="quality-grid">
+              <div class="quality-control"><div class="row"><span class="field-label">话题覆盖率 (%)</span><label class="quality-inherit"><input type="checkbox" id="pubQCoverageInherit" checked />继承全局</label></div><input type="number" id="pubQCoverage" min="0" max="100" step="1" disabled /></div>
+              <div class="quality-control"><div class="row"><span class="field-label">自然追问倾向 (%)</span><label class="quality-inherit"><input type="checkbox" id="pubQFollowUpInherit" checked />继承全局</label></div><input type="number" id="pubQFollowUp" min="0" max="100" step="1" disabled /></div>
+              <div class="quality-control quality-length" id="pubQLength"><div class="row"><span class="field-label">短 / 普通 / 长回答比例 (%)</span><label class="quality-inherit"><input type="checkbox" id="pubQLengthInherit" checked />继承全局</label></div><div class="quality-length-inputs"><input type="number" id="pubQLengthShort" min="0" max="100" step="1" placeholder="短" disabled /><input type="number" id="pubQLengthNormal" min="0" max="100" step="1" placeholder="普通" disabled /><input type="number" id="pubQLengthLong" min="0" max="100" step="1" placeholder="长" disabled /></div></div>
+              <div class="quality-control"><div class="row"><span class="field-label">情绪延续轮数</span><label class="quality-inherit"><input type="checkbox" id="pubQEmotionInherit" checked />继承全局</label></div><input type="number" id="pubQEmotion" min="0" max="20" step="1" disabled /></div>
+              <div class="quality-control"><div class="row"><span class="field-label">重复检查轮数</span><label class="quality-inherit"><input type="checkbox" id="pubQRepetitionInherit" checked />继承全局</label></div><input type="number" id="pubQRepetition" min="0" max="50" step="1" disabled /></div>
+            </div>
+          </details>
           <div class="editor-block">
             <span class="field-label">系统提示词（人设正文）</span>
             <div class="var-toolbar">
@@ -5621,6 +5641,76 @@
       }
     }
 
+    function setPersonaQualityControls(prefix, quality) {
+      const patch = quality || {};
+      const scalars = [
+        ["Coverage", "coveragePercent"],
+        ["FollowUp", "followUpPercent"],
+        ["Emotion", "emotionContinuityTurns"],
+        ["Repetition", "repetitionWindowAssistantTurns"],
+      ];
+      scalars.forEach(([suffix, key]) => {
+        const inherit = $(prefix + suffix + "Inherit");
+        const input = $(prefix + suffix);
+        const isInherited = patch[key] == null;
+        inherit.checked = isInherited;
+        input.disabled = isInherited;
+        input.value = isInherited ? "" : String(patch[key]);
+      });
+      const lengthInherited = patch.lengthWeights == null;
+      $(prefix + "LengthInherit").checked = lengthInherited;
+      ["Short", "Normal", "Long"].forEach((bucket, index) => {
+        const input = $(prefix + "Length" + bucket);
+        input.disabled = lengthInherited;
+        input.value = lengthInherited ? "" : String(patch.lengthWeights[index]);
+      });
+    }
+
+    function readPersonaQualityControls(prefix) {
+      const inherited = (suffix) => $(prefix + suffix + "Inherit").checked;
+      const number = (suffix) => Number($(prefix + suffix).value);
+      return {
+        coveragePercent: inherited("Coverage") ? null : number("Coverage"),
+        followUpPercent: inherited("FollowUp") ? null : number("FollowUp"),
+        lengthWeights: inherited("Length") ? null : [
+          number("LengthShort"),
+          number("LengthNormal"),
+          number("LengthLong"),
+        ],
+        emotionContinuityTurns: inherited("Emotion") ? null : number("Emotion"),
+        repetitionWindowAssistantTurns: inherited("Repetition") ? null : number("Repetition"),
+      };
+    }
+
+    function validatePersonaQualityControls(quality) {
+      const bounded = (value, max) => value == null || (Number.isFinite(value) && value >= 0 && value <= max);
+      if (!bounded(quality.coveragePercent, 100) || !bounded(quality.followUpPercent, 100)) {
+        throw new Error("覆盖率与追问倾向须在 0～100 之间");
+      }
+      if (quality.lengthWeights && (
+        quality.lengthWeights.some((value) => !bounded(value, 100)) ||
+        Math.abs(quality.lengthWeights.reduce((sum, value) => sum + value, 0) - 100) > 1e-9
+      )) throw new Error("短、普通、长回答比例须合计 100");
+      if (quality.emotionContinuityTurns != null && (!Number.isInteger(quality.emotionContinuityTurns) || !bounded(quality.emotionContinuityTurns, 20))) {
+        throw new Error("情绪延续轮数须为 0～20 的整数");
+      }
+      if (quality.repetitionWindowAssistantTurns != null && (!Number.isInteger(quality.repetitionWindowAssistantTurns) || !bounded(quality.repetitionWindowAssistantTurns, 50))) {
+        throw new Error("重复检查轮数须为 0～50 的整数");
+      }
+    }
+
+    function wirePersonaQualityControls(prefix) {
+      ["Coverage", "FollowUp", "Length", "Emotion", "Repetition"].forEach((suffix) => {
+        $(prefix + suffix + "Inherit").addEventListener("change", () => {
+          const disabled = $(prefix + suffix + "Inherit").checked;
+          const targets = suffix === "Length"
+            ? ["LengthShort", "LengthNormal", "LengthLong"]
+            : [suffix];
+          targets.forEach((target) => { $(prefix + target).disabled = disabled; });
+        });
+      });
+    }
+
     function resetEditor() {
       state.editingPersonaId = null;
       $("pubEditId").value = "";
@@ -5631,6 +5721,7 @@
       if ($("pubMode")) $("pubMode").value = "prompt";
       if ($("pubWebSearch")) $("pubWebSearch").checked = false;
       if ($("pubLlmProvider")) $("pubLlmProvider").value = "";
+      setPersonaQualityControls("pubQ", {});
       const pubRadio = document.querySelector('input[name="pubVis"][value="public"]');
       if (pubRadio) pubRadio.checked = true;
       $("editorTitle").textContent = "人设编辑器";
@@ -5658,6 +5749,7 @@
         if ($("pubWebSearch")) {
           $("pubWebSearch").checked = Boolean(p.webSearchEnabled);
         }
+        setPersonaQualityControls("pubQ", p.conversationQuality || {});
         await fillPubLlmSelect(p.llmProviderId || "");
         $("editorTitle").textContent = "编辑人设";
         $("pubSubmit").textContent = "保存修改";
@@ -5803,6 +5895,7 @@
     }
 
     $("pubMode")?.addEventListener("change", () => syncChatflowHint());
+    wirePersonaQualityControls("pubQ");
 
     $("pubSubmit").onclick = async () => {
       const displayName = $("pubName").value.trim();
@@ -5821,6 +5914,13 @@
       const mode = $("pubMode")?.value === "chatflow" ? "chatflow" : "prompt";
       const llmProviderId = ($("pubLlmProvider")?.value || "").trim() || null;
       const webSearchEnabled = Boolean($("pubWebSearch")?.checked);
+      const conversationQuality = readPersonaQualityControls("pubQ");
+      try {
+        validatePersonaQualityControls(conversationQuality);
+      } catch (error) {
+        toast(error.message, true);
+        return;
+      }
       const body = {
         displayName,
         description: $("pubDesc").value.trim(),
@@ -5830,6 +5930,7 @@
         mode,
         llmProviderId,
         webSearchEnabled,
+        conversationQuality,
       };
       try {
         if (state.editingPersonaId) {

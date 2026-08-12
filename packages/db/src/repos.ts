@@ -173,6 +173,18 @@ export interface BotCredentials {
 export type PersonaVisibility = "public" | "private";
 export type PersonaMode = "prompt" | "chatflow";
 
+export interface PersonaConversationQuality {
+  coveragePercent?: number;
+  followUpPercent?: number;
+  lengthWeights?: [number, number, number];
+  emotionContinuityTurns?: number;
+  repetitionWindowAssistantTurns?: number;
+}
+
+export type PersonaConversationQualityPatch = {
+  [K in keyof PersonaConversationQuality]?: PersonaConversationQuality[K] | null;
+};
+
 export interface Persona {
   id: string;
   slug: string;
@@ -206,6 +218,8 @@ export interface Persona {
   llm_provider_id?: string | null;
   /** Allow web_search tool when global WEB_SEARCH_ENABLED */
   web_search_enabled?: number;
+  /** RULE-002 partial override only; absent fields inherit global settings. */
+  conversation_quality?: PersonaConversationQuality;
   created_at?: string;
   updated_at?: string;
 }
@@ -1150,6 +1164,72 @@ export async function updateBotProactiveSettings(
 
 // ── Personas / Square ──────────────────────────────────
 
+const PERSONA_QUALITY_KEYS = [
+  "coveragePercent",
+  "followUpPercent",
+  "lengthWeights",
+  "emotionContinuityTurns",
+  "repetitionWindowAssistantTurns",
+] as const satisfies readonly (keyof PersonaConversationQuality)[];
+
+export function validatePersonaConversationQualityPatch(
+  input: PersonaConversationQualityPatch | null | undefined,
+): PersonaConversationQuality {
+  if (input == null) return {};
+  if (typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("conversationQuality must be an object");
+  }
+  const allowed = new Set<string>(PERSONA_QUALITY_KEYS);
+  for (const key of Object.keys(input)) {
+    if (!allowed.has(key)) throw new Error(`unknown conversationQuality field: ${key}`);
+  }
+  const out: PersonaConversationQuality = {};
+  const percent = (key: "coveragePercent" | "followUpPercent") => {
+    const value = input[key];
+    if (value == null) return;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
+      throw new Error(`${key} must be between 0 and 100`);
+    }
+    out[key] = value;
+  };
+  percent("coveragePercent");
+  percent("followUpPercent");
+
+  if (input.lengthWeights != null) {
+    const weights = input.lengthWeights;
+    if (
+      !Array.isArray(weights) ||
+      weights.length !== 3 ||
+      weights.some(
+        (value) =>
+          typeof value !== "number" ||
+          !Number.isFinite(value) ||
+          value < 0 ||
+          value > 100,
+      ) ||
+      Math.abs(weights[0]! + weights[1]! + weights[2]! - 100) > 1e-9
+    ) {
+      throw new Error("lengthWeights must contain three values totaling 100");
+    }
+    out.lengthWeights = [weights[0]!, weights[1]!, weights[2]!];
+  }
+
+  const integer = (
+    key: "emotionContinuityTurns" | "repetitionWindowAssistantTurns",
+    max: number,
+  ) => {
+    const value = input[key];
+    if (value == null) return;
+    if (!Number.isInteger(value) || value < 0 || value > max) {
+      throw new Error(`${key} must be an integer between 0 and ${max}`);
+    }
+    out[key] = value;
+  };
+  integer("emotionContinuityTurns", 20);
+  integer("repetitionWindowAssistantTurns", 50);
+  return out;
+}
+
 function normalizePersona(raw: Persona | null | undefined): Persona | undefined {
   if (!raw) return undefined;
   return {
@@ -1197,6 +1277,7 @@ export async function createPersona(
     mode?: PersonaMode;
     llmProviderId?: string | null;
     webSearchEnabled?: boolean;
+    conversationQuality?: PersonaConversationQualityPatch | null;
     /** Optional initial chatflow graph (object or JSON string) */
     graphJson?: string | object | null;
   },
@@ -1206,6 +1287,9 @@ export async function createPersona(
   if (prompt.length > PROMPT_MAX_CHARS) {
     throw new Error(`systemPrompt too long (max ${PROMPT_MAX_CHARS})`);
   }
+  const conversationQuality = validatePersonaConversationQualityPatch(
+    input.conversationQuality,
+  );
   const owner = input.ownerUserId || "system";
   const visibility: PersonaVisibility =
     input.visibility === "private" ? "private" : "public";
@@ -1256,6 +1340,9 @@ export async function createPersona(
     mode: input.mode === "chatflow" ? "chatflow" : "prompt",
     llm_provider_id: input.llmProviderId?.trim() || null,
     web_search_enabled: input.webSearchEnabled ? 1 : 0,
+    ...(Object.keys(conversationQuality).length
+      ? { conversation_quality: conversationQuality }
+      : {}),
     created_at: nowIso(),
     updated_at: nowIso(),
   };
@@ -1510,8 +1597,13 @@ export async function updatePersonaMeta(
     mode?: PersonaMode;
     llmProviderId?: string | null;
     webSearchEnabled?: boolean;
+    conversationQuality?: PersonaConversationQualityPatch | null;
   },
 ): Promise<Persona> {
+  const validatedConversationQuality =
+    patch.conversationQuality != null
+      ? validatePersonaConversationQualityPatch(patch.conversationQuality)
+      : null;
   const p = await getPersona(db, personaId);
   if (!p) throw new Error("persona not found");
   if (patch.displayName != null) p.display_name = patch.displayName.trim();
@@ -1535,6 +1627,27 @@ export async function updatePersonaMeta(
   }
   if (patch.webSearchEnabled !== undefined) {
     p.web_search_enabled = patch.webSearchEnabled ? 1 : 0;
+  }
+  if (patch.conversationQuality !== undefined) {
+    if (patch.conversationQuality === null) {
+      delete p.conversation_quality;
+    } else {
+      const next: PersonaConversationQuality = {
+        ...(p.conversation_quality ?? {}),
+      };
+      for (const key of PERSONA_QUALITY_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(patch.conversationQuality, key)) {
+          continue;
+        }
+        if (patch.conversationQuality[key] == null) {
+          delete next[key];
+        } else {
+          Object.assign(next, { [key]: validatedConversationQuality![key] });
+        }
+      }
+      if (Object.keys(next).length) p.conversation_quality = next;
+      else delete p.conversation_quality;
+    }
   }
   p.updated_at = nowIso();
   await db.setJson(K.persona(personaId), p);
@@ -1960,6 +2073,7 @@ export async function forkPersona(
     mode: source.mode === "chatflow" ? "chatflow" : "prompt",
     llmProviderId: null,
     webSearchEnabled: Boolean(source.web_search_enabled),
+    conversationQuality: source.conversation_quality,
   });
 
   if (sourceGraph) {

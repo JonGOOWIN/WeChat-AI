@@ -23,13 +23,22 @@ function assertReadOnlyAndSecretFree(workflow) {
 }
 
 function assertNonBypassableAndBounded(workflow) {
+  assert.equal(workflow.defaults, undefined, "workflow must not define defaults");
   for (const [name, job] of Object.entries(workflow.jobs)) {
     assert.equal(job.if, undefined, `${name} job must not be conditional`);
-    assert.notEqual(job["continue-on-error"], true, `${name} job must fail closed`);
+    assert.equal(job.defaults, undefined, `${name} job must not define defaults`);
+    assert.equal(job["continue-on-error"], undefined, `${name} job must not define continue-on-error`);
     assert.equal(job["timeout-minutes"], name === "test" ? 30 : 20);
     for (const [index, step] of job.steps.entries()) {
-      assert.notEqual(step["continue-on-error"], true, `${name} step ${index} must fail closed`);
-      if (step.run) assert.equal(step.if, undefined, `${name} command step ${index} must always run`);
+      assert.equal(
+        step["continue-on-error"],
+        undefined,
+        `${name} step ${index} must not define continue-on-error`,
+      );
+      if (step.run) {
+        assert.equal(step.if, undefined, `${name} command step ${index} must always run`);
+        assert.equal(step.shell, undefined, `${name} command step ${index} must not define shell`);
+      }
     }
   }
 }
@@ -105,10 +114,16 @@ test("CI safety guard rejects a parsed workflow with repository writes", async (
   );
 });
 
-test("CI gate rejects conditional or continue-on-error command execution", async () => {
+test("CI gate rejects expression bypasses, defaults, and command shells", async () => {
   const knownBad = parse(await readFile("scripts/fixtures/ci-bypass-known-bad.yml", "utf8"));
+  const expressionOnly = structuredClone(knownBad);
+  delete expressionOnly.defaults;
+  const shellOnly = structuredClone(expressionOnly);
+  delete shellOnly.jobs.lint["continue-on-error"];
 
-  assert.throws(() => assertNonBypassableAndBounded(knownBad), /must fail closed/);
+  assert.throws(() => assertNonBypassableAndBounded(knownBad), /must not define defaults/);
+  assert.throws(() => assertNonBypassableAndBounded(expressionOnly), /must not define continue-on-error/);
+  assert.throws(() => assertNonBypassableAndBounded(shellOnly), /must not define shell/);
 });
 
 test("CI jobs cannot bypass failures or hang without a bound", async () => {

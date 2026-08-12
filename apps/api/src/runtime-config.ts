@@ -200,7 +200,6 @@ export class RuntimeConfigManager {
     const doc = read.doc;
     const raw = doc ? JSON.stringify(doc) : "";
     if (raw === this.lastSeen) return false;
-    this.lastSeen = raw;
 
     const next: Partial<Record<RuntimeSettingKey, SettingValue>> = {};
     for (const [k, v] of Object.entries(doc?.values ?? {})) {
@@ -240,10 +239,14 @@ export class RuntimeConfigManager {
       this.log(`[settings] invalid stored config, keeping last known config: ${message}`);
       return false;
     }
+    const changed = this.applyEffective(next);
+    if (changed === null) return false;
+
     this.overrides = next;
     this.updatedAt = doc?.updatedAt ?? "";
     this.updatedBy = doc?.updatedBy ?? "";
-    return this.applyEffective();
+    this.lastSeen = raw;
+    return changed.size > 0;
   }
 
   /** Effective value for one key: Redis override, else env default. */
@@ -252,41 +255,65 @@ export class RuntimeConfigManager {
     return o === undefined ? this.envDefaults[key] : o;
   }
 
-  /** Write effective values into `cfg` in place; fan out the diff. */
-  private applyEffective(): boolean {
+  /**
+   * Stage effective values, fan out the diff, then commit `cfg` in place.
+   * A null result means the fan-out rejected the candidate and nothing owned
+   * by this manager was committed.
+   */
+  private applyEffective(
+    overrides: Partial<Record<RuntimeSettingKey, SettingValue>>,
+  ): Set<RuntimeSettingKey> | null {
     const changed = new Set<RuntimeSettingKey>();
     const bag = this.cfg as unknown as Record<string, unknown>;
+    const candidate = Object.fromEntries(
+      Object.entries(this.cfg).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? [...value] : value,
+      ]),
+    ) as unknown as AppConfig;
+    const candidateBag = candidate as unknown as Record<string, unknown>;
     for (const spec of SETTING_SPECS) {
-      const want = settingValueToConfig(spec, this.effective(spec.key));
+      const override = overrides[spec.key];
+      const want = settingValueToConfig(
+        spec,
+        override === undefined ? this.envDefaults[spec.key] : override,
+      );
       const have = bag[spec.key];
       const same = Array.isArray(want)
         ? Array.isArray(have) && want.join(",") === have.join(",")
         : want === have;
       if (same) continue;
-      bag[spec.key] = want;
+      candidateBag[spec.key] = want;
       changed.add(spec.key);
     }
     if (changed.has("stickerMaxBytes")) {
       // Kept consistent with loadConfig(); only takes effect after a restart.
-      this.cfg.uploadBodyLimit = Math.max(
+      candidate.uploadBodyLimit = Math.max(
         12 * 1024 * 1024,
-        this.cfg.stickerMaxBytes * 2,
+        candidate.stickerMaxBytes * 2,
       );
     }
-    if (!changed.size) return false;
+    if (!changed.size) return changed;
     try {
-      this.applyFn(changed, this.cfg);
+      this.applyFn(changed, candidate);
     } catch (err) {
       this.log(
         `[settings] apply failed: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      return null;
+    }
+    for (const key of changed) {
+      bag[key] = candidateBag[key];
+    }
+    if (changed.has("stickerMaxBytes")) {
+      this.cfg.uploadBodyLimit = candidate.uploadBodyLimit;
     }
     this.log(
       `[settings] applied ${changed.size} change(s): ${[...changed].join(", ")}`,
     );
-    return true;
+    return changed;
   }
 
   /** Cross-field sanity checks; advisory only, never silently rewrites input. */

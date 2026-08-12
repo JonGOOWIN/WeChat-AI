@@ -194,16 +194,24 @@ describe("RuntimeConfigManager", () => {
   let db: ReturnType<typeof fakeDb>;
   let cfg: AppConfig;
   let applied: Array<Set<RuntimeSettingKey>>;
+  let appliedConfigs: AppConfig[];
+  let applyError: Error | null;
   let mgr: RuntimeConfigManager;
 
   beforeEach(async () => {
     db = fakeDb();
     cfg = baseConfig({ WEB_SEARCH_ENABLED: "false", CHATFLOW_MAX_STEPS: "32" });
     applied = [];
+    appliedConfigs = [];
+    applyError = null;
     mgr = new RuntimeConfigManager(
       db,
       cfg,
-      (changed) => applied.push(new Set(changed)),
+      (changed, live) => {
+        if (applyError) throw applyError;
+        applied.push(new Set(changed));
+        appliedConfigs.push(structuredClone(live));
+      },
       () => {},
     );
     await mgr.init();
@@ -559,6 +567,7 @@ describe("RuntimeConfigManager", () => {
     assert.equal(cfg.replyCoveragePercent, 55);
     assert.equal(cfg.replyFollowUpPercent, 20);
     const appliedBefore = applied.length;
+    const viewBefore = structuredClone(mgr.view());
 
     db.store.set("wa:settings:runtime", {
       values: {
@@ -572,6 +581,50 @@ describe("RuntimeConfigManager", () => {
     assert.equal(await mgr.refresh(), false);
     assert.equal(cfg.replyCoveragePercent, 55);
     assert.equal(cfg.replyFollowUpPercent, 20);
+    assert.deepEqual(mgr.view(), viewBefore);
     assert.equal(applied.length, appliedBefore);
+  });
+
+  /**
+   * Ticket #16: "If the service fan-out callback throws, the public config
+   * object, local overrides, updated metadata and last-seen marker all remain
+   * at the previous good state."
+   */
+  it("retries a failed multi-field apply without exposing a partial config", async () => {
+    await mgr.patch({ patch: { replyCoveragePercent: 55 }, actor: "tester" });
+    const cfgBefore = structuredClone(cfg);
+    const viewBefore = structuredClone(mgr.view());
+    const appliedBefore = applied.length;
+
+    db.store.set("wa:settings:runtime", {
+      values: {
+        replyCoveragePercent: 65,
+        replyFollowUpPercent: 35,
+      },
+      updatedAt: "peer-update",
+      updatedBy: "peer-node",
+    });
+    applyError = new Error("transient subsystem failure");
+
+    assert.equal(await mgr.refresh(), false);
+    assert.deepEqual(cfg, cfgBefore);
+    assert.deepEqual(mgr.view(), viewBefore);
+    assert.equal(applied.length, appliedBefore);
+
+    applyError = null;
+    assert.equal(await mgr.refresh(), true, "the same document is retried");
+    assert.equal(cfg.replyCoveragePercent, 65);
+    assert.equal(cfg.replyFollowUpPercent, 35);
+    assert.equal(mgr.view().updatedAt, "peer-update");
+    assert.equal(mgr.view().updatedBy, "peer-node");
+    assert.equal(applied.length, appliedBefore + 1);
+    assert.deepEqual(
+      [...applied.at(-1)!].sort(),
+      ["replyCoveragePercent", "replyFollowUpPercent"],
+    );
+    assert.equal(appliedConfigs.at(-1)!.replyCoveragePercent, 65);
+    assert.equal(appliedConfigs.at(-1)!.replyFollowUpPercent, 35);
+    assert.equal(await mgr.refresh(), false, "a successful document is consumed once");
+    assert.equal(applied.length, appliedBefore + 1);
   });
 });

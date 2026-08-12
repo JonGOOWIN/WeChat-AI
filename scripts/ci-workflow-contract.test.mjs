@@ -62,7 +62,7 @@ function assertPinnedToolchainAndMatchingGates(workflow, packageJson) {
   for (const name of expectedJobs) {
     const job = workflow.jobs[name];
     const checkoutSteps = job.steps.filter(
-      (step) => typeof step.uses === "string" && step.uses.startsWith("actions/checkout@"),
+      (step) => String(step.uses).split("@")[0].toLowerCase() === "actions/checkout",
     );
     assert.equal(checkoutSteps.length, 1, `${name} must run exactly one checkout action`);
     assert.equal(checkoutSteps[0].uses, "actions/checkout@v4", `${name} checkout must use v4`);
@@ -148,6 +148,20 @@ test("CI gate rejects checkout inputs that replace the tested revision", async (
   assert.throws(
     () => assertPinnedToolchainAndMatchingGates(workflow, packageJson),
     /checkout.*with|with.*checkout/i,
+  );
+});
+
+test("CI gate rejects a second checkout hidden behind a case alias", async () => {
+  const [workflow, packageJson, mutations] = await Promise.all([
+    loadWorkflow(),
+    readFile("package.json", "utf8").then(JSON.parse),
+    readFile("scripts/fixtures/ci-env-checkout-mutations.yml", "utf8").then(parse),
+  ]);
+  workflow.jobs.lint.steps.push(mutations.checkoutAlias);
+
+  assert.throws(
+    () => assertPinnedToolchainAndMatchingGates(workflow, packageJson),
+    /exactly one checkout action/i,
   );
 });
 

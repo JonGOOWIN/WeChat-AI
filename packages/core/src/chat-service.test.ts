@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   approvePeer,
+  clearMessages,
+  getUsageDayStats,
   listMemories,
   listRecentMessages,
   openDatabase,
@@ -40,7 +42,35 @@ class FakeLlm implements Pick<LlmClient, "chat" | "chatWithUsage"> {
   }
 }
 
-function asLlm(fake: FakeLlm): LlmClient {
+class ScriptedLlm implements Pick<LlmClient, "chat" | "chatWithUsage"> {
+  calls = 0;
+  constructor(private readonly replies: Array<string | Error>) {}
+
+  private next(): string {
+    const reply = this.replies[this.calls] ?? this.replies.at(-1) ?? "";
+    this.calls++;
+    if (reply instanceof Error) throw reply;
+    return reply;
+  }
+
+  async chat(): Promise<string> {
+    return this.next();
+  }
+
+  async chatWithUsage() {
+    return {
+      text: this.next(),
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      model: "fake",
+    };
+  }
+}
+
+function asLlm(
+  fake: Pick<LlmClient, "chat" | "chatWithUsage">,
+): LlmClient {
   return fake as unknown as LlmClient;
 }
 
@@ -333,6 +363,325 @@ describe("ChatService multi-user isolation (Redis)", () => {
         r.parts!.some((p) => p.kind === "text" && p.text.includes("给你看")),
     );
     await db.close();
+  });
+});
+
+describe("ChatService legacy reply-filter fail-closed behavior (Redis)", () => {
+  it("skips an authoritative-empty inbound reply without assistant history", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    await db.ping();
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = "bot_issue13_inbound_authoritative_empty";
+    const peerId = "issue13-inbound-empty@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "issue13",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+
+    const llm = new ScriptedLlm([
+      "primary reply",
+      '{"messages":[]}',
+    ]);
+    const before = await getUsageDayStats(db);
+    const requestsBefore = before.by_bot[botId]?.requests ?? 0;
+    const chat = new ChatService(db, asLlm(llm), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      replyFilterEnabled: true,
+      stickersEnabled: false,
+    });
+
+    const result = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "请回答？",
+      contextToken: "issue13-inbound-empty-token",
+    });
+
+    assert.equal(result.kind, "skip");
+    assert.equal(result.skipReason, "empty_reply");
+    assert.equal(llm.calls, 2, "primary + filter LLM");
+    const history = await listRecentMessages(db, botId, peerId, 20);
+    assert.equal(
+      history.filter((message) => message.role === "assistant").length,
+      0,
+    );
+    const after = await getUsageDayStats(db);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 2);
+  });
+
+  it("skips an unknown-sticker-only proactive reply without assistant history", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    await db.ping();
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = "bot_issue13_proactive_unknown_sticker";
+    const peerId = "issue13-proactive-sticker@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "issue13",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await setPeerProactiveEnabled(db, botId, peerId, true);
+    await clearMessages(db, botId, peerId);
+
+    const llm = new ScriptedLlm([
+      "primary proactive reply",
+      '{"messages":[{"type":"sticker","slug":"ghost"}]}',
+    ]);
+    const before = await getUsageDayStats(db);
+    const requestsBefore = before.by_bot[botId]?.requests ?? 0;
+    const chat = new ChatService(db, asLlm(llm), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      replyFilterEnabled: true,
+      stickersEnabled: false,
+    });
+
+    const result = await chat.handleProactive({
+      botAccountId: botId,
+      peerId,
+      contextToken: "issue13-proactive-sticker-token",
+      idleHours: 12,
+    });
+
+    assert.equal(result.kind, "skip");
+    assert.equal(result.skipReason, "empty_reply");
+    assert.equal(llm.calls, 2, "primary + filter LLM");
+    const history = await listRecentMessages(db, botId, peerId, 20);
+    assert.equal(history.length, 0);
+    assert.equal(JSON.stringify(history).includes("ghost"), false);
+    const after = await getUsageDayStats(db);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 2);
+  });
+
+  it("does not leak a sticker-only primary wrapper when the inbound filter fails", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    await db.ping();
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = "bot_issue13_primary_wrapper";
+    const peerId = "issue13-primary-wrapper@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "issue13",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+
+    const llm = new ScriptedLlm([
+      '{"messages":[{"type":"sticker","slug":"ghost"}]}',
+      new Error("filter unavailable"),
+    ]);
+    const before = await getUsageDayStats(db);
+    const requestsBefore = before.by_bot[botId]?.requests ?? 0;
+    const chat = new ChatService(db, asLlm(llm), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      replyFilterEnabled: true,
+      stickersEnabled: false,
+    });
+
+    const result = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "请回答？",
+      contextToken: "issue13-primary-wrapper-token",
+    });
+
+    assert.equal(result.kind, "skip");
+    assert.equal(result.skipReason, "empty_reply");
+    assert.equal(llm.calls, 2, "primary + failed filter LLM");
+    const history = await listRecentMessages(db, botId, peerId, 20);
+    assert.equal(
+      history.filter((message) => message.role === "assistant").length,
+      0,
+    );
+    assert.equal(JSON.stringify(history).includes("ghost"), false);
+    const after = await getUsageDayStats(db);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 1);
+  });
+
+  it("uses safely parsed primary parts when the proactive filter fails", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    await db.ping();
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = "bot_issue13_proactive_primary_fallback";
+    const peerId = "issue13-proactive-fallback@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "issue13",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await setPeerProactiveEnabled(db, botId, peerId, true);
+    await clearMessages(db, botId, peerId);
+
+    const llm = new ScriptedLlm([
+      '{"messages":["第一条","第二条"]}',
+      new Error("filter unavailable"),
+    ]);
+    const before = await getUsageDayStats(db);
+    const requestsBefore = before.by_bot[botId]?.requests ?? 0;
+    const chat = new ChatService(db, asLlm(llm), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      replyFilterEnabled: true,
+      stickersEnabled: false,
+    });
+
+    const result = await chat.handleProactive({
+      botAccountId: botId,
+      peerId,
+      contextToken: "issue13-proactive-fallback-token",
+      idleHours: 12,
+    });
+
+    assert.equal(result.kind, "reply");
+    assert.deepEqual(
+      result.parts?.map((part) =>
+        part.kind === "text" ? part.text : part.slug,
+      ),
+      ["第一条", "第二条"],
+    );
+    assert.equal(result.text, "第一条\n第二条");
+    assert.equal(llm.calls, 2, "primary + failed filter LLM");
+    const history = await listRecentMessages(db, botId, peerId, 20);
+    assert.deepEqual(
+      history.map((message) => [message.role, message.content]),
+      [["assistant", "第一条\n第二条"]],
+    );
+    const after = await getUsageDayStats(db);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 1);
+  });
+
+  it("keeps valid text and drops an invalid sticker from an inbound filter", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    await db.ping();
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = "bot_issue13_inbound_mixed_filter";
+    const peerId = "issue13-inbound-mixed@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "issue13",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+
+    const llm = new ScriptedLlm([
+      "primary reply",
+      '{"messages":["保留文字",{"type":"sticker","slug":"ghost"}]}',
+    ]);
+    const before = await getUsageDayStats(db);
+    const requestsBefore = before.by_bot[botId]?.requests ?? 0;
+    const chat = new ChatService(db, asLlm(llm), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      replyFilterEnabled: true,
+      stickersEnabled: false,
+    });
+
+    const result = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "请回答？",
+      contextToken: "issue13-inbound-mixed-token",
+    });
+
+    assert.equal(result.kind, "reply");
+    assert.deepEqual(result.parts, [{ kind: "text", text: "保留文字" }]);
+    assert.equal(result.text, "保留文字");
+    assert.equal(JSON.stringify(result).includes("ghost"), false);
+    const history = await listRecentMessages(db, botId, peerId, 20);
+    assert.equal(
+      history.find((message) => message.role === "assistant")?.content,
+      "保留文字",
+    );
+    const after = await getUsageDayStats(db);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 2);
+  });
+
+  it("does not render a primary sticker-only wrapper when the filter is off", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    await db.ping();
+    await seedPersonas(db);
+    const persona = (await getPersonaBySlug(db, "catgirl"))!;
+    const botId = "bot_issue13_primary_wrapper_filter_off";
+    const peerId = "issue13-primary-filter-off@im.wechat";
+    await upsertBotAccount(db, {
+      id: botId,
+      ownerUserId: "u_test",
+      displayName: "issue13",
+      botToken: "test-token",
+    });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+
+    const llm = new ScriptedLlm([
+      '{"messages":[{"type":"sticker","slug":"ghost"}]}',
+    ]);
+    const before = await getUsageDayStats(db);
+    const requestsBefore = before.by_bot[botId]?.requests ?? 0;
+    const chat = new ChatService(db, asLlm(llm), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      replyFilterEnabled: false,
+      stickersEnabled: false,
+    });
+
+    const result = await chat.handleInbound({
+      botAccountId: botId,
+      peerId,
+      text: "请回答？",
+      contextToken: "issue13-primary-filter-off-token",
+    });
+
+    assert.equal(result.kind, "skip");
+    assert.equal(result.skipReason, "empty_reply");
+    assert.equal(llm.calls, 1, "primary LLM only");
+    const history = await listRecentMessages(db, botId, peerId, 20);
+    assert.equal(
+      history.filter((message) => message.role === "assistant").length,
+      0,
+    );
+    assert.equal(JSON.stringify(history).includes("ghost"), false);
+    const after = await getUsageDayStats(db);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 1);
+
+    const finalized = await chat.finalizeReplyParts({
+      rawLlmText: '{"messages":[{"type":"sticker","slug":"ghost"}]}',
+      stickers: [],
+      botAccountId: botId,
+    });
+    assert.deepEqual(finalized.parts, []);
+    assert.deepEqual(finalized.bubbles, []);
+    assert.equal(finalized.displayText, "");
   });
 });
 

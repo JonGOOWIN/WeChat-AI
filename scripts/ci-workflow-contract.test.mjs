@@ -5,6 +5,7 @@ import { parse } from "yaml";
 
 const workflowPath = ".github/workflows/ci.yml";
 const expectedJobs = ["lint", "test", "typecheck", "build"];
+const trustedRunnerExpression = "${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (vars.RUNS_ON || 'ubuntu-latest') || 'ubuntu-latest' }}";
 
 async function loadWorkflow() {
   return parse(await readFile(workflowPath, "utf8"));
@@ -21,15 +22,42 @@ function assertReadOnlyAndSecretFree(workflow) {
   assert.doesNotMatch(serialized, /LLM_(?:API_)?KEY|OAUTH|PRODUCTION_REDIS/i);
 }
 
+function assertNonBypassableAndBounded(workflow) {
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    assert.equal(job.if, undefined, `${name} job must not be conditional`);
+    assert.notEqual(job["continue-on-error"], true, `${name} job must fail closed`);
+    assert.equal(job["timeout-minutes"], name === "test" ? 30 : 20);
+    for (const [index, step] of job.steps.entries()) {
+      assert.notEqual(step["continue-on-error"], true, `${name} step ${index} must fail closed`);
+      if (step.run) assert.equal(step.if, undefined, `${name} command step ${index} must always run`);
+    }
+  }
+}
+
 test("CI reports the repository quality gates for pull requests and master pushes", async () => {
   const workflow = await loadWorkflow();
 
   assert.deepEqual(Object.keys(workflow.jobs).sort(), [...expectedJobs].sort());
   assert.ok(Object.hasOwn(workflow.on, "pull_request"), "pull_request trigger is required");
+  assert.equal(workflow.on.pull_request, null, "pull_request must not have type, branch, or path filters");
+  assert.equal(Object.hasOwn(workflow.on, "pull_request_target"), false);
+  assert.deepEqual(Object.keys(workflow.on.push), ["branches"]);
   assert.deepEqual(workflow.on.push.branches, ["master"]);
   for (const name of expectedJobs) {
     assert.equal(workflow.jobs[name].name, name);
-    assert.equal(workflow.jobs[name]["runs-on"], "${{ vars.RUNS_ON || 'ubuntu-latest' }}");
+    assert.equal(workflow.jobs[name]["runs-on"], trustedRunnerExpression);
+  }
+});
+
+test("fork pull requests cannot consume repository self-hosted runners", async () => {
+  const workflow = await loadWorkflow();
+
+  for (const name of expectedJobs) {
+    const runner = workflow.jobs[name]["runs-on"];
+    assert.match(runner, /github\.event_name != 'pull_request'/);
+    assert.match(runner, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+    assert.match(runner, /vars\.RUNS_ON \|\| 'ubuntu-latest'/);
+    assert.match(runner, /\|\| 'ubuntu-latest' \}\}$/);
   }
 });
 
@@ -75,6 +103,30 @@ test("CI safety guard rejects a parsed workflow with repository writes", async (
     () => assertReadOnlyAndSecretFree(knownBad),
     /Expected values to be strictly deep-equal/,
   );
+});
+
+test("CI gate rejects conditional or continue-on-error command execution", async () => {
+  const knownBad = parse(await readFile("scripts/fixtures/ci-bypass-known-bad.yml", "utf8"));
+
+  assert.throws(() => assertNonBypassableAndBounded(knownBad), /must fail closed/);
+});
+
+test("CI jobs cannot bypass failures or hang without a bound", async () => {
+  assertNonBypassableAndBounded(await loadWorkflow());
+});
+
+test("self-hosted runner documentation requires Linux and Docker", async () => {
+  const [readme, runbook] = await Promise.all([
+    readFile("README.md", "utf8"),
+    readFile("docs/runbook.md", "utf8"),
+  ]);
+
+  for (const document of [readme, runbook]) {
+    const runnerLine = document.split("\n").find((line) => line.includes("RUNS_ON"));
+    assert.ok(runnerLine, "RUNS_ON documentation is required");
+    assert.match(runnerLine, /Linux/);
+    assert.match(runnerLine, /Docker/);
+  }
 });
 
 test("CI concurrency is scoped to one pull request or branch ref", async () => {

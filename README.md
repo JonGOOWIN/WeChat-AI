@@ -76,7 +76,7 @@ npm run build
 Lint 会检查 workspace 的 TypeScript 源码与测试、Cloudflare Worker TypeScript 源码及仓库脚本。`dist`、`build`、`coverage`、依赖、Wrangler 输出、静态浏览器页面、手动打包的 `cloudflare-worker/worker.js` 与测试 fixture 会明确排除。
 Lint covers workspace TypeScript source/tests, Cloudflare Worker TypeScript source, and repository scripts. Generated/build output, dependencies, Wrangler output, static browser pages, the manually bundled `cloudflare-worker/worker.js`, and test fixtures are intentionally excluded.
 
-Pull requests and pushes to `master` run four separately visible GitHub checks: `lint`, `test`, `typecheck`, and `build`. They use the same commands shown above. CI uses the same Node.js 22.13 floor required by the pinned pnpm 11.15.0. The repository variable `RUNS_ON` may select an existing self-hosted runner; when it is unset, CI uses `ubuntu-latest`.
+Pull requests and pushes to `master` run four separately visible GitHub checks: `lint`, `test`, `typecheck`, and `build`. They use the same commands shown above. CI uses the same Node.js 22.13 floor required by the pinned pnpm 11.15.0. The repository variable `RUNS_ON` may select a self-hosted runner only when that runner is Linux with Docker installed; when it is unset, CI uses `ubuntu-latest`. Pull requests from forks always use `ubuntu-latest` and never receive the self-hosted label.
 
 页面 / Pages：
 

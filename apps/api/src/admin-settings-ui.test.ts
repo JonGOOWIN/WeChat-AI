@@ -61,8 +61,40 @@ describe("Admin conversation settings document", () => {
     ) as (stage: string) => string;
 
     assert.match(summarize("reply"), /条数 100%/);
-    dirty.set("replyCountWeight1", 51);
-    assert.match(summarize("reply"), /条数 101%/);
+
+    const onChangeBody = html.match(
+      /const onChange = \(\) => \{([\s\S]*?)\n        \};\n        el\.onchange = onChange;/,
+    )?.[1];
+    assert.ok(onChangeBody, "numeric input handler is available at the public UI seam");
+    const el = { value: "51", checked: false };
+    const item = { ...items[0]!, type: "float", stage: "reply" };
+    const summaries: string[] = [];
+    const pendingCounts: number[] = [];
+    const onChange = new Function(
+      "el",
+      "item",
+      "settingsState",
+      "settingsRefreshConversationSummaries",
+      "settingsSyncDirtyUi",
+      "renderSettings",
+      `return () => {${onChangeBody}}`,
+    )(
+      el,
+      item,
+      { dirty, resets: new Set<string>() },
+      () => summaries.push(summarize("reply")),
+      () => pendingCounts.push(dirty.size),
+      () => assert.fail("numeric input must not rerender the settings page"),
+    ) as () => void;
+
+    onChange();
+    assert.equal(summaries.at(-1), "条数 101% · 长度 NaN%");
+    assert.equal(pendingCounts.at(-1), 1);
+
+    el.value = "";
+    onChange();
+    assert.equal(summaries.at(-1), "条数 100% · 长度 NaN%");
+    assert.equal(pendingCounts.at(-1), 0, "blank input withdraws the pending save");
   });
 
   it("contains syntactically valid inline scripts", () => {

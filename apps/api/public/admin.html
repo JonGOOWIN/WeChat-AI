@@ -6549,6 +6549,7 @@
             // treat blank as "no change" and let the user finish typing.
             if (el.value.trim() === "") {
               settingsState.dirty.delete(item.key);
+              if (item.stage) settingsRefreshConversationSummaries();
               settingsSyncDirtyUi();
               return;
             }

@@ -11,7 +11,8 @@
     "db:migrate": "pnpm db:seed",
     "diag": "pnpm --filter @wechat-ai/api diag",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test && pnpm run test:lint-contract",
+    "test": "pnpm -r run test && pnpm run test:lint-contract && pnpm run test:ci-contract",
+    "test:ci-contract": "node --test scripts/ci-workflow-contract.test.mjs",
     "test:lint-contract": "node --test scripts/lint-contract.test.mjs",
     "lint": "eslint .",
     "release:pack": "node scripts/release-pack.mjs",
@@ -25,6 +26,7 @@
     "@eslint/js": "^9.39.5",
     "eslint": "^9.39.5",
     "globals": "^16.5.0",
-    "typescript-eslint": "^8.67.0"
+    "typescript-eslint": "^8.67.0",
+    "yaml": "^2.9.0"
   }
 }

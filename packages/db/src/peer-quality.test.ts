@@ -92,4 +92,35 @@ describe("peer conversation quality storage", () => {
       emotionContinuityTurns: 7,
     });
   });
+
+  it("treats malformed optional overlay JSON as inheritance and still clears it", async (t) => {
+    const f = await fixture(t); if (!f) return;
+    const peerId = "malformed-overlay";
+    await ensurePeer(f.db, f.botId, peerId);
+    await f.db.redis.set(K.peerQuality(f.botId, peerId), "{");
+    assert.deepEqual(await getPeerConversationQuality(f.db, f.botId, peerId), {});
+    const peers = await listPeers(f.db, f.botId);
+    assert.equal(
+      peers.find((peer) => peer.peer_id === peerId)?.conversation_quality,
+      undefined,
+    );
+    await setPeerConversationQuality(f.db, f.botId, peerId, {
+      coveragePercent: null,
+      followUpPercent: null,
+      lengthWeights: null,
+      emotionContinuityTurns: null,
+      repetitionWindowAssistantTurns: null,
+    });
+    assert.equal(await f.db.redis.exists(K.peerQuality(f.botId, peerId)), 0);
+  });
+
+  it("does not disguise a Redis I/O failure as inheritance", async (t) => {
+    const db = openDatabase(redisUrl);
+    try { await db.ping(); } catch { db.close(); t.skip("Redis not available"); return; }
+    await db.close();
+    await assert.rejects(
+      () => getPeerConversationQuality(db, "io-failure-bot", "peer"),
+      /closed|connection|enableOfflineQueue/i,
+    );
+  });
 });

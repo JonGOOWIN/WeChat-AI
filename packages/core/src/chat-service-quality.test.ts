@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  K,
   approvePeer,
   clearMessages,
   createPersona,
@@ -55,6 +56,36 @@ function asLlm(fake: CapturingLlm): LlmClient {
 }
 
 describe("ChatService global conversation quality (Redis)", () => {
+  it("inherits persona/global settings when the optional peer overlay is malformed", async (t) => {
+    const db = openDatabase(redisUrl);
+    t.after(() => db.close());
+    try { await db.ping(); } catch { t.skip("Redis not available"); return; }
+    const persona = await createPersona(db, {
+      displayName: `malformed-peer-quality-${process.pid}`,
+      systemPrompt: "reply naturally",
+      ownerUserId: "malformed_quality_owner",
+      visibility: "private",
+      conversationQuality: { coveragePercent: 43 },
+    });
+    const botId = `malformed_peer_quality_${process.pid}_${Math.random()}`;
+    const peerId = "malformed-quality@im.wechat";
+    await upsertBotAccount(db, { id: botId, ownerUserId: "malformed_quality_owner", displayName: "malformed-quality", botToken: "token" });
+    await approvePeer(db, botId, peerId);
+    await setAssignment(db, botId, peerId, persona.id);
+    await clearMessages(db, botId, peerId);
+    await db.redis.set(K.peerQuality(botId, peerId), "{");
+    const chat = new ChatService(db, asLlm(new CapturingLlm()), {
+      allowUnapproved: false,
+      memoryExtractEveryN: 999,
+      stickersEnabled: false,
+      shortHistoryLimit: 20,
+      conversationQuality: { coveragePercent: 80 },
+    });
+    const result = await chat.handleInbound({ botAccountId: botId, peerId, text: "繼承設定", contextToken: "malformed-quality" });
+    assert.equal(result.kind, "reply");
+    assert.equal(result.qualityPlan?.coveragePercent, 43);
+  });
+
   it("merges global, persona and peer fields then falls back after peer clear", async (t) => {
     const db = openDatabase(redisUrl);
     t.after(() => db.close());

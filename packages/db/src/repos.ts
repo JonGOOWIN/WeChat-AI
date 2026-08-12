@@ -2203,16 +2203,34 @@ export async function setPeerProactiveEnabled(
 }
 
 /** Read a RULE-002 peer override from its dedicated bot+peer key. */
+function normalizeStoredPeerConversationQuality(
+  input: unknown,
+): PeerConversationQuality {
+  try {
+    return validatePersonaConversationQualityPatch(
+      input as PeerConversationQualityPatch,
+    );
+  } catch {
+    // This key is an optional overlay. A syntactically valid but contract-invalid
+    // stored document must not take ordinary chat or peer listing down.
+    return {};
+  }
+}
+
 export async function getPeerConversationQuality(
   db: RedisStore,
   botAccountId: string,
   peerId: string,
 ): Promise<PeerConversationQuality> {
-  return (
-    (await db.getJson<PeerConversationQuality>(
-      K.peerQuality(botAccountId, peerId),
-    )) ?? {}
-  );
+  try {
+    const stored = await db.getJson<unknown>(K.peerQuality(botAccountId, peerId));
+    return normalizeStoredPeerConversationQuality(stored);
+  } catch (error) {
+    // getJson also performs JSON.parse. Only malformed optional JSON inherits;
+    // connection/auth/timeouts remain visible and fail closed.
+    if (error instanceof SyntaxError) return {};
+    throw error;
+  }
 }
 
 /**
@@ -2226,17 +2244,29 @@ export async function setPeerConversationQuality(
   patch: PeerConversationQualityPatch | null,
 ): Promise<PeerConversationQuality> {
   const validated = validatePersonaConversationQualityPatch(patch);
-  const next: PeerConversationQuality = patch === null || Object.keys(patch).length === 0
-    ? {}
-    : { ...(await getPeerConversationQuality(db, botAccountId, peerId)) };
-  if (patch !== null && Object.keys(patch).length > 0) {
+  const patchKeys = patch === null ? [] : Object.keys(patch);
+  const clearsWholeOverlay =
+    patch === null ||
+    patchKeys.length === 0 ||
+    PERSONA_QUALITY_KEYS.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(patch, key) && patch[key] == null,
+    );
+  const storageKey = K.peerQuality(botAccountId, peerId);
+  if (clearsWholeOverlay) {
+    await db.del(storageKey);
+    return {};
+  }
+  const next: PeerConversationQuality = {
+    ...(await getPeerConversationQuality(db, botAccountId, peerId)),
+  };
+  if (patch !== null) {
     for (const key of PERSONA_QUALITY_KEYS) {
       if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
       if (patch[key] == null) delete next[key];
       else Object.assign(next, { [key]: validated[key] });
     }
   }
-  const storageKey = K.peerQuality(botAccountId, peerId);
   if (Object.keys(next).length) await db.setJson(storageKey, next);
   else await db.del(storageKey);
   return { ...next };
@@ -2258,7 +2288,7 @@ async function readPeersWithQuality(
   ]);
   return rows.slice(0, count).flatMap((row, index) => {
     if (!row || !("peer_id" in row)) return [];
-    const quality = rows[count + index] as PeerConversationQuality | null;
+    const quality = normalizeStoredPeerConversationQuality(rows[count + index]);
     return [{
       ...row,
       ...(quality && Object.keys(quality).length

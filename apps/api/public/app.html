@@ -4553,6 +4553,15 @@
     }
 
     let _peerQualityTarget = null;
+    function normalizePeerConversationQuality(quality) {
+      const input = quality || {};
+      const next = {};
+      ["coveragePercent", "followUpPercent", "emotionContinuityTurns", "repetitionWindowAssistantTurns"].forEach((key) => {
+        if (input[key] != null) next[key] = input[key];
+      });
+      if (input.lengthWeights != null) next.lengthWeights = [...input.lengthWeights];
+      return next;
+    }
     function closePeerQualityModal() {
       $("peerQualityModal")?.classList.remove("show");
       document.body.style.overflow = "";
@@ -4570,19 +4579,34 @@
       document.body.style.overflow = "hidden";
       setTimeout(() => $("peerQCoverageInherit")?.focus({ preventScroll: true }), 30);
     }
+    async function persistPeerQualitySave(botAccountId, peerId, submittedQuality) {
+      const response = await api("/api/v1/me/peers/quality", {
+        method: "PATCH",
+        body: { botAccountId, peerId, conversationQuality: submittedQuality },
+      });
+      const next = normalizePeerConversationQuality(
+        response?.conversationQuality ?? submittedQuality,
+      );
+      const cached = state.peers.find(
+        (item) => item.bot_account_id === botAccountId && item.peer_id === peerId,
+      );
+      if (cached) cached.conversationQuality = next;
+      toast("对话风格已保存");
+      closePeerQualityModal();
+      try {
+        await loadPeers();
+      } catch (error) {
+        console.warn("peer list refresh failed after quality save", error);
+      }
+      return next;
+    }
     async function savePeerQualityModal() {
       if (!_peerQualityTarget) return;
       const { botAccountId, peerId } = _peerQualityTarget;
       const conversationQuality = readPersonaQualityControls("peerQ");
       try {
         validatePersonaQualityControls(conversationQuality);
-        await api("/api/v1/me/peers/quality", {
-          method: "PATCH",
-          body: { botAccountId, peerId, conversationQuality },
-        });
-        toast("对话风格已保存");
-        closePeerQualityModal();
-        await loadPeers();
+        await persistPeerQualitySave(botAccountId, peerId, conversationQuality);
       } catch (e) {
         toast(e.message || "保存失败", true);
       }

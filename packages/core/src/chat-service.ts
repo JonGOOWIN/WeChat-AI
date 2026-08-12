@@ -441,17 +441,17 @@ export class ChatService {
           };
         }
       }
-      const rawFallback =
-        !params.adaptive && raw ? [{ kind: "text" as const, text: raw }] : [];
-      const parts = filtered.parts.length > 0 ? filtered.parts : rawFallback;
+      // ReplyFilter owns fallback parsing. An empty result can be an
+      // authoritative send-plan decision, so raw primary text must not revive
+      // it here.
+      const parts = filtered.parts;
       const bubbles =
         filtered.bubbles.length > 0
           ? filtered.bubbles
           : parts.map((p) =>
               p.kind === "text" ? p.text : `[表情:${p.slug}]`,
             );
-      const displayText =
-        filtered.displayText || bubbles.join("\n") || (params.adaptive ? "" : raw);
+      const displayText = filtered.displayText || bubbles.join("\n");
       return {
         parts,
         bubbles,
@@ -476,25 +476,11 @@ export class ChatService {
     let parts = parsed.parts.length > 0 ? parsed.parts : rawFallback;
     // Drop invented / unknown sticker slugs (same rule as ReplyFilter path)
     parts = dropDisallowedStickers(parts, allowedSlugs);
-    if (!parts.length) {
-      parts = rawFallback;
-    }
-    const bubbles =
-      parts.length > 0
-        ? parts.map((p) =>
-            p.kind === "text" ? p.text : `[表情:${p.slug}]`,
-          )
-        : !params.adaptive && raw
-          ? [raw]
-          : [];
-    const displayText =
-      parts.length > 0
-        ? parts
-            .map((p) =>
-              p.kind === "text" ? p.text : `[表情:${p.slug}]`,
-            )
-            .join("\n")
-        : parsed.displayText || bubbles.join("\n");
+    if (!parts.length) parts = rawFallback;
+    const bubbles = parts.map((p) =>
+      p.kind === "text" ? p.text : `[表情:${p.slug}]`,
+    );
+    const displayText = bubbles.join("\n");
     return {
       parts,
       bubbles,
@@ -793,10 +779,27 @@ export class ChatService {
     });
     const { parts, bubbles, displayText, bubblesFromJson } = finalized;
 
-    // Adaptive plans are a stricter public contract than legacy single turns.
-    // Fail closed before storing or sending an assistant turn.
-    if (req.replyPlan && (parts.length === 0 || !displayText.trim())) {
-      return { kind: "skip", skipReason: "invalid_reply_plan" };
+    // Fail closed before storing or sending an assistant turn. Keep the
+    // adaptive skip contract unchanged; legacy callers use the same empty
+    // reason as proactive callers and still account for the primary LLM call.
+    if (parts.length === 0 || !displayText.trim()) {
+      if (req.replyPlan) {
+        return { kind: "skip", skipReason: "invalid_reply_plan" };
+      }
+      await recordTokenUsage(this.db, {
+        userId: bot?.owner_user_id,
+        botId: req.botAccountId,
+        promptTokens,
+        completionTokens,
+        username: owner?.username,
+        botName: bot?.display_name,
+      });
+      return {
+        kind: "skip",
+        skipReason: "empty_reply",
+        personaId: persona.id,
+        personaSlug: persona.slug,
+      };
     }
 
     // Everything left is independent bookkeeping — one wave, not four.

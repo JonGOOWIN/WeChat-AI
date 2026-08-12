@@ -1,5 +1,9 @@
 import { K, type Db } from "@wechat-ai/db";
-import { assertReplyCountWeights, type AppConfig } from "./config.js";
+import {
+  assertReplyCountWeights,
+  assertReplyLengthWeights,
+  type AppConfig,
+} from "./config.js";
 import {
   coerceSetting,
   configToSettingValue,
@@ -203,7 +207,13 @@ export class RuntimeConfigManager {
       if (!isRuntimeSettingKey(k)) continue;
       const spec = SETTING_SPEC_BY_KEY.get(k)!;
       const coerced = coerceSetting(spec, v);
-      if (coerced !== null) next[k] = coerced;
+      if (coerced === null) {
+        const message = `stored runtime setting ${k} is invalid`;
+        this.lastReadError = message;
+        this.log(`[settings] invalid stored config, keeping last known config: ${message}`);
+        return false;
+      }
+      next[k] = coerced;
     }
     try {
       assertReplyCountWeights(
@@ -214,6 +224,15 @@ export class RuntimeConfigManager {
           );
         }),
         "stored runtime reply count weights",
+      );
+      assertReplyLengthWeights(
+        (["Short", "Normal", "Long"] as const).map((bucket) => {
+          const key = `replyLengthWeight${bucket}` as RuntimeSettingKey;
+          return Number(
+            next[key] === undefined ? this.envDefaults[key] : next[key],
+          );
+        }),
+        "stored runtime reply length weights",
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -474,6 +493,12 @@ export class RuntimeConfigManager {
         effectiveWeight(`replyCountWeight${count}` as RuntimeSettingKey),
       ),
       "runtime reply count weights",
+    );
+    assertReplyLengthWeights(
+      (["Short", "Normal", "Long"] as const).map((bucket) =>
+        effectiveWeight(`replyLengthWeight${bucket}` as RuntimeSettingKey),
+      ),
+      "runtime reply length weights",
     );
 
     const nextDoc: RuntimeSettingsDoc = {

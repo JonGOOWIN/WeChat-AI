@@ -45,6 +45,13 @@ const CHAT_KEYS: RuntimeSettingKey[] = [
   "visionMode",
   "visionModel",
   "visionCaptionMaxTokens",
+  "replyCoveragePercent",
+  "replyFollowUpPercent",
+  "replyLengthWeightShort",
+  "replyLengthWeightNormal",
+  "replyLengthWeightLong",
+  "emotionContinuityTurns",
+  "repetitionWindowAssistantTurns",
 ];
 
 const TRYCHAT_KEYS: RuntimeSettingKey[] = [
@@ -172,6 +179,17 @@ export function applyRuntimeConfigToServices(
       visionMode: cfg.visionMode,
       visionModel: cfg.visionModel || undefined,
       visionCaptionMaxTokens: cfg.visionCaptionMaxTokens,
+      conversationQuality: {
+        coveragePercent: cfg.replyCoveragePercent,
+        followUpPercent: cfg.replyFollowUpPercent,
+        lengthWeights: [
+          cfg.replyLengthWeightShort,
+          cfg.replyLengthWeightNormal,
+          cfg.replyLengthWeightLong,
+        ],
+        emotionContinuityTurns: cfg.emotionContinuityTurns,
+        repetitionWindowAssistantTurns: cfg.repetitionWindowAssistantTurns,
+      },
     });
   }
 

@@ -259,6 +259,30 @@ describe("RuntimeConfigManager", () => {
     assert.equal(applied.length, 0);
   });
 
+  it("rejects an all-zero reply-length patch before persisting or applying it", async () => {
+    await assert.rejects(
+      mgr.patch({
+        patch: {
+          replyLengthWeightShort: 0,
+          replyLengthWeightNormal: 0,
+          replyLengthWeightLong: 0,
+        },
+        actor: "tester",
+      }),
+      /reply length weights/i,
+    );
+    assert.deepEqual(
+      [
+        cfg.replyLengthWeightShort,
+        cfg.replyLengthWeightNormal,
+        cfg.replyLengthWeightLong,
+      ],
+      [60, 30, 10],
+    );
+    assert.equal(db.store.size, 0);
+    assert.equal(applied.length, 0);
+  });
+
   it("keeps the last good UI and worker config when stored weights are all zero", async () => {
     db.store.set("wa:settings:runtime", {
       values: {
@@ -528,5 +552,26 @@ describe("RuntimeConfigManager", () => {
     });
     await mgr.refresh();
     assert.equal(cfg.chatflowMaxSteps, 32);
+  });
+
+  it("keeps all last-known-good quality settings when one known value is corrupt", async () => {
+    await mgr.patch({ patch: { replyCoveragePercent: 55 }, actor: "tester" });
+    assert.equal(cfg.replyCoveragePercent, 55);
+    assert.equal(cfg.replyFollowUpPercent, 20);
+    const appliedBefore = applied.length;
+
+    db.store.set("wa:settings:runtime", {
+      values: {
+        replyCoveragePercent: "NaN",
+        replyFollowUpPercent: 80,
+      },
+      updatedAt: "corrupt-quality-doc",
+      updatedBy: "peer-node",
+    });
+
+    assert.equal(await mgr.refresh(), false);
+    assert.equal(cfg.replyCoveragePercent, 55);
+    assert.equal(cfg.replyFollowUpPercent, 20);
+    assert.equal(applied.length, appliedBefore);
   });
 });

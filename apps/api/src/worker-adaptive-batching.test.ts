@@ -5,6 +5,7 @@ import type { Db } from "@wechat-ai/db";
 import type { ILinkClient, WeixinMessage } from "@wechat-ai/ilink";
 import { BotWorkerManager } from "./worker.js";
 import type { BatchClock } from "./adaptive-reply-batcher.js";
+import { initActivityBus, type StreamEvent } from "./activity-stream.js";
 
 class FakeClock implements BatchClock {
   private current = 0;
@@ -49,7 +50,7 @@ function inbound(text: string, token: string, at: number): WeixinMessage {
 }
 
 describe("BotWorkerManager adaptive reply seam", () => {
-  it("turns same-peer inbound events into one conversation and ordered sends", async () => {
+  it("turns same-peer inbound events into one conversation and ordered sends", async (t) => {
     const clock = new FakeClock();
     const conversations: Array<Record<string, unknown>> = [];
     const events: Array<{ type: string; token: string; text?: string }> = [];
@@ -60,6 +61,10 @@ describe("BotWorkerManager adaptive reply seam", () => {
         },
       },
     } as unknown as Db;
+    const activity = initActivityBus({ db, enabled: true });
+    t.after(() => activity.stop());
+    const activityEvents: StreamEvent[] = [];
+    activity.subscribe((event) => activityEvents.push(event));
     const chat = {
       async handleInbound(request: Record<string, unknown>) {
         conversations.push(request);
@@ -69,6 +74,10 @@ describe("BotWorkerManager adaptive reply seam", () => {
             { kind: "text" as const, text: "第一条" },
             { kind: "text" as const, text: "第二条" },
           ],
+          qualityPlan: {
+            coveredTopicIds: ["quality-covered"],
+            omittedTopicIds: ["quality-omitted"],
+          },
         };
       },
     } as unknown as ChatService;
@@ -137,6 +146,11 @@ describe("BotWorkerManager adaptive reply seam", () => {
       { type: "send", token: "new-token", text: "第二条" },
       { type: "typing-stop", token: "new-token" },
     ]);
+    for (const type of ["message.out", "llm.usage"]) {
+      const event = activityEvents.find((candidate) => candidate.type === type);
+      assert.deepEqual(event?.data?.coveredItemIds, ["quality-covered"]);
+      assert.deepEqual(event?.data?.omittedTopicIds, ["quality-omitted"]);
+    }
     assert.equal(await worker.processNextReply(), false);
   });
 

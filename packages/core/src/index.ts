@@ -6,6 +6,18 @@ export {
   type ProactiveChatRequest,
 } from "./chat-service.js";
 export {
+  DEFAULT_CONVERSATION_QUALITY,
+  buildConversationQualityRepairInstruction,
+  inspectConversationQuality,
+  planConversationQuality,
+  resolveConversationQualitySettings,
+  scoreConversationQualityViolations,
+  type ConversationQualityPlan,
+  type ConversationQualitySettings,
+  type ConversationQualityViolation,
+  type ReplyLengthBucket,
+} from "./conversation-quality.js";
+export {
   applyPromptTemplate,
   buildAttachmentBlock,
   buildBatchUserContent,

@@ -74,6 +74,27 @@ function asLlm(
   return fake as unknown as LlmClient;
 }
 
+function noOpUsageDb(): never {
+  const pipeline = {
+    hincrby() {
+      return pipeline;
+    },
+    expire() {
+      return pipeline;
+    },
+    hset() {
+      return pipeline;
+    },
+    sadd() {
+      return pipeline;
+    },
+    async exec() {
+      return [];
+    },
+  };
+  return { redis: { pipeline: () => pipeline } } as never;
+}
+
 describe("ChatService multi-user isolation (Redis)", () => {
   it("keeps separate memories per peer", async (t) => {
     let db;
@@ -342,6 +363,7 @@ describe("ChatService multi-user isolation (Redis)", () => {
       // default path: no second-pass filter
       replyFilterEnabled: false,
       stickersEnabled: false,
+      conversationQuality: { followUpPercent: 100 },
     });
     const r = await chat.handleInbound({
       botAccountId: botId,
@@ -514,7 +536,7 @@ describe("ChatService legacy reply-filter fail-closed behavior (Redis)", () => {
     );
     assert.equal(JSON.stringify(history).includes("ghost"), false);
     const after = await getUsageDayStats(db);
-    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 1);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 2);
   });
 
   it("uses safely parsed primary parts when the proactive filter fails", async (t) => {
@@ -571,7 +593,7 @@ describe("ChatService legacy reply-filter fail-closed behavior (Redis)", () => {
       [["assistant", "第一条\n第二条"]],
     );
     const after = await getUsageDayStats(db);
-    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 1);
+    assert.equal((after.by_bot[botId]?.requests ?? 0) - requestsBefore, 2);
   });
 
   it("keeps valid text and drops an invalid sticker from an inbound filter", async (t) => {
@@ -709,7 +731,7 @@ describe("ChatService adaptive reply finalization seam", () => {
       },
     } as unknown as LlmClient;
     const chat = new ChatService(
-      {} as never,
+      noOpUsageDb(),
       emptyFilter,
       { replyFilterEnabled: true },
     );
@@ -754,7 +776,7 @@ describe("ChatService adaptive reply finalization seam", () => {
         throw new Error("filter unavailable");
       },
     } as unknown as LlmClient;
-    const chat = new ChatService({} as never, failingFilter, {
+    const chat = new ChatService(noOpUsageDb(), failingFilter, {
       replyFilterEnabled: true,
     });
     const result = await chat.finalizeReplyParts(
@@ -781,7 +803,7 @@ describe("ChatService adaptive reply finalization seam", () => {
         };
       },
     } as unknown as LlmClient;
-    const chat = new ChatService({} as never, unknownStickerFilter, {
+    const chat = new ChatService(noOpUsageDb(), unknownStickerFilter, {
       replyFilterEnabled: true,
     });
     const result = await chat.finalizeReplyParts(

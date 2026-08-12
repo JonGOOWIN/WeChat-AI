@@ -32,6 +32,13 @@ export type RuntimeSettingKey =
   | "replyCountWeight2"
   | "replyCountWeight3"
   | "replyCountWeight4"
+  | "replyCoveragePercent"
+  | "replyFollowUpPercent"
+  | "replyLengthWeightShort"
+  | "replyLengthWeightNormal"
+  | "replyLengthWeightLong"
+  | "emotionContinuityTurns"
+  | "repetitionWindowAssistantTurns"
   | "allowUnapproved"
   | "peerRatePerMinute"
   // memory
@@ -302,6 +309,55 @@ export const SETTING_SPECS: SettingSpec[] = [
       hint: "相对权重；语境优先，不会为凑条数机械拆句",
     }),
   ),
+  {
+    key: "replyCoveragePercent",
+    env: "REPLY_COVERAGE_PERCENT",
+    group: "chat",
+    label: "回覆義務話題覆蓋率(%)",
+    type: "float",
+    min: 0,
+    max: 100,
+    hint: "只控制已決定回覆批次中的話題覆蓋；直接問題、請求、決定與情緒表達不會被省略",
+  },
+  {
+    key: "replyFollowUpPercent",
+    env: "REPLY_FOLLOW_UP_PERCENT",
+    group: "chat",
+    label: "自然追問傾向(%)",
+    type: "float",
+    min: 0,
+    max: 100,
+  },
+  ...(["Short", "Normal", "Long"] as const).map(
+    (bucket): SettingSpec => ({
+      key: `replyLengthWeight${bucket}` as RuntimeSettingKey,
+      env: `REPLY_LENGTH_WEIGHT_${bucket.toUpperCase()}`,
+      group: "chat",
+      label: `${bucket === "Short" ? "短" : bucket === "Normal" ? "普通" : "長"}回答權重`,
+      type: "float",
+      min: 0,
+      max: 10000,
+    }),
+  ),
+  {
+    key: "emotionContinuityTurns",
+    env: "EMOTION_CONTINUITY_TURNS",
+    group: "chat",
+    label: "情緒延續完成輪數",
+    type: "int",
+    min: 0,
+    max: 20,
+  },
+  {
+    key: "repetitionWindowAssistantTurns",
+    env: "REPETITION_WINDOW_ASSISTANT_TURNS",
+    group: "chat",
+    label: "重複檢查 assistant 輪數",
+    type: "int",
+    min: 0,
+    max: 50,
+    hint: "違規初稿在送出前最多重寫一次；若同時開啟二次 AI 排版，最壞為主生成、主排版、重寫、重寫排版共 4 次 LLM 呼叫",
+  },
   {
     key: "replyDelayMsPerChar",
     env: "REPLY_DELAY_MS_PER_CHAR",

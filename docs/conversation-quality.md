@@ -23,6 +23,10 @@ Chatflow 每個 LLM 節點都會在其 system prompt 後附加有效品質區塊
 `follow-up-not-selected`、`length-normal`）。這些欄位不含消息正文、prompt、stable turn key、
 topic ID、模型憑證或其他 secret。
 
+網頁試聊成功後也會產生一筆 `llm.usage`：`personaMode` 可區分 prompt／Chatflow，並附上
+本輪有效 profile、原因碼及 token 用量。即使 `WORKER_ENABLED=false`，管理員仍可在「資料流」
+查看這筆 API-side 事件；試聊 session ID 與雙方正文不會進入事件。
+
 ## 離線校準
 
 `evaluateConversationQualityFixture()` 接受固定 fixture，輸出回覆義務覆蓋率、是否追問、

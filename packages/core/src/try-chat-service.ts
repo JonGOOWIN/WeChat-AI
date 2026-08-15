@@ -96,6 +96,9 @@ export interface SendTryMessageResult {
   };
   remainingToday: number;
   remainingSession: number;
+  /** Persona metadata for privacy-safe runtime observability. */
+  personaId: string;
+  personaMode: Persona["mode"];
   /** Effective deterministic plan (global → persona; try-chat has no peer). */
   qualityPlan: ConversationQualityPlan;
 }
@@ -504,6 +507,8 @@ export class TryChatService {
         0,
         this.opts.maxUserMsgsPerSession - session.msgCount,
       ),
+      personaId: persona.id,
+      personaMode: persona.mode,
       qualityPlan,
     };
   }

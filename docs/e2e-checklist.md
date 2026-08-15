@@ -111,13 +111,14 @@
 
 ## K. 对话质量全路径（合并后串行）
 
-- [ ] 后台「对话与回复」修改五组质量参数并保存，重新加载后值不变
-- [ ] Prompt 人设的联系人覆盖留空时逐栏继承；清除后不恢复旧值
-- [ ] Chatflow LLM 节点使用不含 `{{system_prompt}}` 的自定义 system，activity 仍显示有效 profile 与 reason codes
-- [ ] 网页试聊同一人设，activity 只反映全局→人设，不出现联系人覆盖
-- [ ] activity 不出现消息正文、stable turn key、topic ID 或模型密钥
+- [x] 后台「对话与回复」修改五组质量参数并保存，重新加载后值不变
+- [x] Prompt 人设的联系人覆盖留空时逐栏继承；清除后不恢复旧值
+- [x] Chatflow LLM 节点使用不含 `{{system_prompt}}` 的自定义 system，activity 仍显示有效 profile 与 reason codes
+- [x] 网页试聊同一人设，activity 只反映全局→人设，不出现联系人覆盖
+- [x] activity 不出现消息正文、stable turn key、topic ID 或模型密钥
 
 本节必须在浏览器资源可用、功能合并后串行真点；单元测试通过不等于本节已验收。
+2026-08-15 的本地 Playwright MCP 证据见 `docs/acceptance/issue-11/REPORT.md`。
 
 ## 验收结论
 

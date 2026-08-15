@@ -176,8 +176,10 @@ import {
   createDefaultChatflowGraph,
   validateChatflowGraph,
   ChatflowError,
+  summarizeConversationQualityPlan,
   type ChatService,
 } from "@wechat-ai/core";
+import { emitActivity } from "./activity-stream.js";
 import { probeToolsHealth } from "@wechat-ai/llm";
 import type { BotWorkerManager } from "./worker.js";
 import type { BotLoginSessionManager } from "./bot-login-sessions.js";
@@ -2189,6 +2191,22 @@ export async function registerRoutes(
         sessionId: req.params.sessionId,
         text: req.body?.text ?? "",
         username: user.username,
+      });
+      const quality = summarizeConversationQualityPlan(result.qualityPlan);
+      emitActivity({
+        type: "llm.usage",
+        source: "api",
+        summary: `try-chat persona=${result.personaId} mode=${result.personaMode}`,
+        data: {
+          scope: "try-chat",
+          personaId: result.personaId,
+          personaMode: result.personaMode,
+          promptTokens: result.usage.promptTokens,
+          completionTokens: result.usage.completionTokens,
+          totalTokens: result.usage.totalTokens,
+          conversationQuality: quality.profile,
+          qualityReasonCodes: quality.reasonCodes,
+        },
       });
       return {
         messages: result.parts.map((p) =>

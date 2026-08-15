@@ -16,15 +16,30 @@ describe("Admin conversation settings document", () => {
     assert.match(html, /aria-label="批次、判断、回复参数"/);
   });
 
-  it("converts displayed seconds back to the API value and stacks on narrow screens", () => {
+  it("converts displayed seconds back to the API value", () => {
     assert.match(html, /n \* \(item\.displayDivisor \|\| 1\)/);
     assert.match(
       html,
       /item\.step != null \? item\.step \/ divisor : \(item\.type === "int" \? 1 : 0\.01\) \/ divisor/,
     );
+  });
+
+  it("keeps batch, decision, and reply cards compact across viewport sizes", () => {
     assert.match(
       html,
-      /@media \(max-width: 1040px\)[\s\S]*?\.conversation-flow \{ grid-template-columns: 1fr; \}/,
+      /\.conversation-flow \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(0, 2fr\);[\s\S]*?align-items: start;/,
+    );
+    assert.match(
+      html,
+      /\.conversation-stage\[data-conversation-stage="reply"\] \.set-grid \{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    assert.match(
+      html,
+      /@media \(max-width: 1180px\)[\s\S]*?\.conversation-flow \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}[\s\S]*?\.conversation-stage\[data-conversation-stage="reply"\] \{ grid-column: 1 \/ -1; \}/,
+    );
+    assert.match(
+      html,
+      /@media \(max-width: 720px\)[\s\S]*?\.conversation-flow \{ grid-template-columns: 1fr; \}[\s\S]*?\.conversation-stage\[data-conversation-stage="reply"\] \.set-grid \{ grid-template-columns: 1fr; \}/,
     );
   });
 

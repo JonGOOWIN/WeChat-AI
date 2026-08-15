@@ -88,7 +88,8 @@ wa:settings:runtime（Redis JSON）  ←  管理面板写入
   成本与延迟。管理面板的「重复检查 assistant 轮数」提示会显示这项代价。
   正式微信逐栏按全局→人设→联系人合并；网页试聊只有全局→人设。Chatflow 的每个 LLM
   节点都会附加质量区块，即使节点自定义 system 且未引用人设变量。完整校准方式与限制见
-  `docs/conversation-quality.md`。
+  `docs/conversation-quality.md`。成功的 prompt／Chatflow 网页试聊会在管理台「资料流」留下
+  不含正文与 session ID 的 `llm.usage`，可核对有效 profile、原因码和 token 用量。
 - `ChatService.webSearch` 原本在构造函数里判断一次，`WEB_SEARCH_ENABLED=false` 启动就永远
   是 `null`。现在按 tools 配置的指纹惰性重建。
 - `BotWorkerManager` 的 10 个 `readonly` 标量改成可写，且 setter 里复刻了构造函数的

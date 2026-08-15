@@ -105,6 +105,8 @@ describe("TryChatService conversation quality", () => {
 
     const result = await service.sendMessage({ userId: "try_chatflow_quality_owner", sessionId: session.sessionId, text: "你好" });
 
+    assert.equal(result.personaId, persona.id);
+    assert.equal(result.personaMode, "chatflow");
     assert.equal(result.qualityPlan.coveragePercent, 38);
     assert.match(system, /try custom system/);
     assert.match(system, /回覆覆蓋率：38%/);
